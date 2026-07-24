@@ -75,8 +75,8 @@ man-style help (`./fleetcom help`, and `./fleetcom <command> --help`):
 ./fleetcom start          # boots everything in dependency order (skips what's already up)
 ./fleetcom doctor         # port + health report
 ./fleetcom logs           # live backend log panes + error alerts (auto-opens after start)
-./fleetcom restart        # full bounce of everything, Midship included
-./fleetcom stop           # stops Cascade + AuditBoard (--midship to also stop Midship)
+./fleetcom restart        # full bounce of all three stacks
+./fleetcom stop           # stops all three stacks + tears down the log view
 ./fleetcom claude         # full restart + a Claude Code pane beside the logs (see below)
 ./fleetcom help           # man-style overview of every command
 ```
@@ -149,7 +149,6 @@ inside this repo, auto-loads the skill's diagnose-and-self-heal playbook.
   terminal (reading the log files on demand instead of tmux panes).
 - With tmux, always uses the tmux log view for this run (it needs a pane for
   Claude); your saved `LOGS_VIEW` in `local.conf` is left untouched.
-- `--midship` also stops/restarts Midship (forwarded to stop/start-all).
 - `--no-restart` skips the stop/start and just adds the Claude pane to a
   running (or freshly built) log session — use it when the stack is already up.
 - **Run it from a separate terminal window**, not from inside the

@@ -1,6 +1,6 @@
 #!/bin/bash
-# FLEETCOM: stop AuditBoard + Cascade. Midship is left running unless
-# invoked with --midship.
+# FLEETCOM: stop all three stacks — AuditBoard, Cascade, and Midship (plus the
+# Hatchet workers) — and tear down the log view.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -90,8 +90,8 @@ kill_port 9001; kill_port 9003                     # api v1/v2 (turbo children f
 brew services stop postgresql@17 >/dev/null 2>&1
 brew services stop redis >/dev/null 2>&1
 
-if [ "${1:-}" = "--midship" ] && [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
-	say "midship (requested via --midship)"
+if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
+	say "midship"
 	kill_port 8000; kill_port 5173
 	stop_hatchet_workers                            # consumer processes start-all launches (not port-bound)
 	(cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && docker compose down)

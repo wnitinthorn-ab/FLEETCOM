@@ -64,9 +64,8 @@ asking for help is using, so use it.
 | Boot everything (skips what's already up) | `./fleetcom-start-all.sh` |
 | Check port/health status | `./fleetcom-doctor.sh` |
 | Watch backend logs | `./fleetcom-logs.sh` |
-| Full bounce, Midship included | `./fleetcom-restart-all.sh` |
-| Stop AB + Cascade (Midship stays up) | `./fleetcom-stop-all.sh` |
-| Stop everything including Midship | `./fleetcom-stop-all.sh --midship` |
+| Full bounce of all three stacks | `./fleetcom-restart-all.sh` |
+| Stop all three stacks | `./fleetcom-stop-all.sh` |
 
 ## The self-heal loop
 

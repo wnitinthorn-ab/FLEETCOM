@@ -45,8 +45,8 @@ render_overview() {
 	h "Commands:"
 	printf '  %-10s %s\n' onboard "Configure repositories, ports, SSO, and dependencies"
 	printf '  %-10s %s\n' start   "Start all stacks in dependency order"
-	printf '  %-10s %s\n' stop    "Stop Cascade + AuditBoard (--midship for Midship too)"
-	printf '  %-10s %s\n' restart "Restart the entire stack, Midship included"
+	printf '  %-10s %s\n' stop    "Stop all three stacks and the log view"
+	printf '  %-10s %s\n' restart "Restart all three stacks (stop then start)"
 	printf '  %-10s %s\n' doctor  "Show port + health status"
 	printf '  %-10s %s\n' logs    "Stream backend logs and error alerts"
 	printf '  %-10s %s\n' claude  "Full restart, then launch Claude Code beside the logs"
@@ -85,18 +85,16 @@ render_cmd_help() {
 		printf '    fleetcom start\n    fleetcom start --tmux\n    fleetcom start --no-logs\n'
 		;;
 	stop)
-		h "NAME";        printf '    fleetcom stop - stop Cascade and AuditBoard\n\n'
-		h "USAGE";       printf '    fleetcom stop [--midship]\n\n'
-		h "DESCRIPTION"; printf '    Stops Cascade and AuditBoard and tears down the log view. Midship is\n    left running (the shared, fixed stack) unless --midship is given.\n\n'
-		h "OPTIONS"
-		printf '    --midship\n        Also stop the Midship stack.\n\n'
+		h "NAME";        printf '    fleetcom stop - stop all three stacks\n\n'
+		h "USAGE";       printf '    fleetcom stop\n\n'
+		h "DESCRIPTION"; printf '    Stops AuditBoard, Cascade, and Midship (including the Hatchet workers)\n    and tears down the log view.\n\n'
 		h "EXAMPLES"
-		printf '    fleetcom stop\n    fleetcom stop --midship\n'
+		printf '    fleetcom stop\n'
 		;;
 	restart)
-		h "NAME";        printf '    fleetcom restart - full bounce of everything, Midship included\n\n'
+		h "NAME";        printf '    fleetcom restart - full bounce of all three stacks\n\n'
 		h "USAGE";       printf '    fleetcom restart [--no-logs] [--tmux | --windows]\n\n'
-		h "DESCRIPTION"; printf '    Runs "stop --midship" then "start": a clean restart of all three\n    stacks. Any options are forwarded to start.\n\n'
+		h "DESCRIPTION"; printf '    Runs "stop" then "start": a clean restart of all three stacks. Any\n    options are forwarded to start.\n\n'
 		h "OPTIONS"
 		printf '    --no-logs\n        Do not auto-open the log panes after restarting.\n'
 		printf '    --tmux\n        Open the logs in the tmux grid for this run (not persisted).\n'
@@ -124,10 +122,9 @@ render_cmd_help() {
 		;;
 	claude|start-claude)
 		h "NAME";        printf '    fleetcom claude - full restart, then a Claude Code pane by the logs\n\n'
-		h "USAGE";       printf '    fleetcom claude [--midship] [--no-restart]\n\n'
+		h "USAGE";       printf '    fleetcom claude [--no-restart]\n\n'
 		h "DESCRIPTION"; printf '    Does a full restart, then adds a Claude Code pane to the tmux log\n    window (Claude on the left, logs tiled on the right). Claude reads log\n    output on demand rather than tailing continuously.\n\n'
 		h "OPTIONS"
-		printf '    --midship\n        Also stop/restart Midship during the bounce.\n'
 		printf '    --no-restart\n        Skip the stop/start; just add the Claude pane to a running session.\n\n'
 		h "NOTES"
 		printf '    Requires the claude CLI. tmux is preferred (Claude tiled beside the\n    logs); if it is missing you are offered a "brew install tmux", and\n    declining falls back to separate Terminal windows with Claude in this\n    terminal. Run it from a separate terminal window, not from inside the\n    log session (the restart tears that down).\n\n'

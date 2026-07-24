@@ -5,7 +5,6 @@
 # squeezed into a strip on the right. Claude pulls logs on demand
 # (tmux capture-pane) rather than tailing continuously.
 #   fleetcom-start-claude.sh              stop + boot + add claude pane
-#   fleetcom-start-claude.sh --midship    also stop/restart midship
 #   fleetcom-start-claude.sh --no-restart  skip stop/start; just add the claude
 #                                          pane to a running (or freshly built)
 #                                          tmux log session
@@ -124,7 +123,12 @@ fi
 # start-all returned, so a hung boot left you with no panes at all. On a restart
 # we rebuild the session fresh; on --no-restart we reuse any existing one.
 if [ "$RESTART" = 1 ]; then
-	tmux kill-session -t "$SESSION" 2>/dev/null || true
+	# Converge on a single fresh view: kill any existing log session AND close
+	# its Terminal window(s) via --kill, so a previous grid attached in another
+	# window isn't left orphaned when we build the new one. (A bare kill-session
+	# would drop that window's attach but leave it dead-but-open.) Safe: this
+	# runs before the current terminal attaches, so it won't close us.
+	"$HERE/fleetcom-logs.sh" --kill
 fi
 if tmux has-session -t "$SESSION" 2>/dev/null; then
 	say "reusing existing tmux log session"

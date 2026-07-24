@@ -14,8 +14,7 @@ mkdir -p "$LOGS"
 say() { printf '\033[36m[start-all]\033[0m %s\n' "$*"; }
 up()  { lsof -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 
-# args (recognized anywhere; unknown ones — e.g. --midship forwarded by
-# fleetcom-start-claude.sh — are ignored, not errors):
+# args (recognized anywhere; anything unrecognized is ignored, not an error):
 #   --no-logs             don't auto-open the log view at the end
 #   --tmux | --windows    force that log view for this run only (not persisted)
 OPEN_LOGS=1
@@ -50,7 +49,7 @@ if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 		docker start "$WOPI_ID" >/dev/null 2>&1 || true
 	fi
 	# hatchet lives in its own compose project (hatchet-cli); restart its
-	# containers if fleetcom-stop-all.sh --midship (or a reboot) stopped them
+	# containers if fleetcom-stop-all.sh (or a reboot) stopped them
 	HATCHET_STOPPED=$(docker ps -aq --filter "name=hatchet-cli" --filter "status=exited" 2>/dev/null || true)
 	[ -n "$HATCHET_STOPPED" ] && docker start $HATCHET_STOPPED >/dev/null && say "restarted hatchet containers"
 	docker ps -aq --filter "name=hatchet-cli" 2>/dev/null | grep -q . \
@@ -86,8 +85,8 @@ if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 		# and runs `kill 0`; without its own group that would signal start-all's
 		# entire group — the Midship API/frontend included — if the workers exit
 		# (e.g. all three fail on a stale Hatchet token). With its own group the
-		# kill 0 stays contained to the workers. fleetcom-stop-all.sh --midship
-		# tears them down (matched by the same 'run-workers?.sh' / worker pattern).
+		# kill 0 stays contained to the workers. fleetcom-stop-all.sh tears them
+		# down (matched by the same 'run-workers?.sh' / worker pattern).
 		( cd "$MIDSHIP_TURBO_BROCCOLI_DIR" || exit 0; set -m; ENV=local_db nohup bash scripts/run-workers.sh > "$LOGS/midship-workers.log" 2>&1 & )
 	fi
 	if up 5173; then say "midship frontend already on 5173"; else
@@ -227,6 +226,12 @@ say "done — run ./fleetcom-doctor.sh to verify. AB: https://localhost:9002  Ca
 
 if [ "$OPEN_LOGS" = 1 ] && [ -t 0 ]; then
 	say "opening backend logs (./fleetcom-logs.sh reopens later; --no-logs skips this; --tmux/--windows switches view)"
+	# Converge on a single fresh log view: tear down any existing session/windows
+	# first. No-op on a clean boot; on a re-run it closes the stale panes/windows
+	# (Terminal.app may ask you to confirm each) so you never end up with a
+	# duplicate or dead log view. (claude's own start runs with --no-logs, so it
+	# skips this and keeps the session it just built.)
+	"$HERE/fleetcom-logs.sh" --kill
 	# --tmux/--windows here is a one-run override via the LOGS_VIEW env (which
 	# fleetcom-logs.sh honors over local.conf); it does NOT persist. Without it,
 	# fleetcom-logs.sh uses your saved LOGS_VIEW as before.
