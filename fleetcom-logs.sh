@@ -100,11 +100,17 @@ fi
 mkdir -p "$LOGS"
 touch "$LOGS/ab-api.log" "$LOGS/midship-api.log"
 
-# tail -F (capital) survives start-all truncating the logs on restart
+# tail -F (capital) survives start-all truncating the logs on restart. Cascade
+# has no host log file, so it streams from docker — but `docker-compose logs -f`
+# EXITS when its containers are torn down (e.g. a restart), and unlike tail -F
+# it won't re-attach on its own. So wrap the cascade stream in a re-follow loop:
+# when the containers come back it reconnects, giving the pane the same
+# restart-resilience as the tail -F panes. (The pane's Ctrl-C trap still wins —
+# SIGINT breaks the loop and drops to a shell, per wrap().)
 OPTRO_CMD="tail -n 80 -F '$LOGS/ab-api.log'"
 MIDSHIP_CMD="tail -n 80 -F '$LOGS/midship-api.log'"
-CASCADE_CMD="cd '$CASCADE_DIR' && $CASCADE_COMPOSE logs -f --tail 80 web ws c3 c3manager"
-ALERTS_CMD="{ tail -n 0 -F '$LOGS/ab-api.log' '$LOGS/midship-api.log' & { cd '$CASCADE_DIR' && $CASCADE_COMPOSE logs -f --tail 0 web ws c3 c3manager 2>&1; } & wait; } | grep --line-buffered -iE '(errors?|warn(ing)?|fatal|exceptions?|traceback)[: ]'"
+CASCADE_CMD="cd '$CASCADE_DIR' && while :; do $CASCADE_COMPOSE logs -f --tail 80 web ws c3 c3manager; echo '[cascade logs detached — containers restarting? re-following in 2s (Ctrl-C for a shell)]'; sleep 2; done"
+ALERTS_CMD="{ tail -n 0 -F '$LOGS/ab-api.log' '$LOGS/midship-api.log' & { cd '$CASCADE_DIR' && while :; do $CASCADE_COMPOSE logs -f --tail 0 web ws c3 c3manager 2>&1; sleep 2; done; } & wait; } | grep --line-buffered -iE '(errors?|warn(ing)?|fatal|exceptions?|traceback)[: ]'"
 # doctor: live port/health report, refreshed as services come up and down.
 # `watch` isn't on macOS by default, so fall back to a clear+sleep loop (both
 # preserve doctor's color). `|| true` so a non-zero doctor run (some check
