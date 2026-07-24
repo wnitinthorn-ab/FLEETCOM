@@ -402,6 +402,20 @@ starts the local server on the right ports, and copies the worker token into
 midship's `.env`. Midship boots fine without it, but the document-processing
 pipeline (Hatchet workers) won't run until it's up.
 
+### doctor shows Hatchet workers NOT RUNNING / document uploads hang or 500
+
+The Hatchet server (1337/7077) is only the queue — the API dispatches
+document-processing workflows onto it, but a separate worker process
+(`midship-turbo-broccoli/scripts/run-workers.sh`, three subprocesses:
+document/procedure/screenshot) has to actually consume them.
+`fleetcom-start-all.sh` launches this automatically -> `logs/midship-workers.log`.
+If it's still not running: `cd midship-turbo-broccoli && ENV=local_db bash
+scripts/run-workers.sh`. Without it, uploads either dispatch fine and then sit
+queued forever with no visible error (nothing ever parses the document), or —
+if the Hatchet client token in `.env` is *also* stale (see above; regenerates
+whenever the Hatchet containers are recreated, e.g. after a Docker outage) —
+fail immediately with `grpc_status:16 invalid auth token` on upload.
+
 ### start-background: "failed to set up container networking: network … not found"
 
 Stopped containers are pinned to a Docker network that no longer exists

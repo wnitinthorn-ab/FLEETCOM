@@ -71,6 +71,18 @@ if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 			(cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && ENV=local_db nohup poetry run uvicorn midship.app.main:app --reload --timeout-graceful-shutdown 15 > "$LOGS/midship-api.log" 2>&1 &)
 		fi
 	fi
+	# Hatchet workers (document/procedure/screenshot) are separate consumer
+	# processes — the API only dispatches workflows onto Hatchet's queue.
+	# Without these running, dispatched uploads sit queued forever with no
+	# visible error (see README: Hatchet).
+	if pgrep -f "midship.heretic.hatchet.worker" >/dev/null 2>&1; then
+		say "midship hatchet workers already running"
+	elif ! (cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && poetry run python -c '' >/dev/null 2>&1); then
+		say "WARNING: midship-turbo-broccoli's poetry env isn't set up — SKIPPING hatchet workers"
+	else
+		say "midship hatchet workers -> logs/midship-workers.log"
+		(cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && ENV=local_db nohup bash scripts/run-workers.sh > "$LOGS/midship-workers.log" 2>&1 &)
+	fi
 	if up 5173; then say "midship frontend already on 5173"; else
 		if [ ! -d "$MIDSHIP_FRONTEND_DIR/node_modules" ]; then
 			say "WARNING: midship-frontend has no node_modules — SKIPPING the Midship frontend (run 'npm install' there, then re-run)"

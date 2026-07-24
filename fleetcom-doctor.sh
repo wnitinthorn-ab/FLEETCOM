@@ -31,6 +31,16 @@ check_http() { # url, expected code, label
 	fi
 }
 
+check_process() { # pgrep pattern, label
+	local pattern=$1 label=$2
+	if pgrep -f "$pattern" >/dev/null 2>&1; then
+		printf "%s✓ %-5s %-40s running%s\n" "$GREEN" "" "$label" "$NC"
+	else
+		printf "%s✗ %-5s %-40s NOT RUNNING%s\n" "$RED" "" "$label" "$NC"
+		FAIL=1
+	fi
+}
+
 echo "== Midship (fixed ports) =="
 check_port 5173 node   "Vite frontend"
 check_port 8000 Python "FastAPI API"
@@ -40,6 +50,7 @@ check_port 5432 docke  "Postgres (docker)"
 check_port 6379 docke  "Redis (docker)"
 check_port 1337 docke  "Hatchet server (docker)"
 check_port 7077 docke  "Hatchet gRPC (docker)"
+check_process "midship.heretic.hatchet.worker" "Hatchet workers (document/procedure/screenshot)"
 
 echo "== AuditBoard =="
 check_port 5433  postgres "native Postgres (moved)"
