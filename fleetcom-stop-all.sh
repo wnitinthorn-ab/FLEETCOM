@@ -48,6 +48,24 @@ stop_containers_named() { # docker stop by name filter, quiet when none match
 	ids=$(docker ps -q --filter "name=$1" 2>/dev/null)
 	[ -n "$ids" ] && docker stop $ids >/dev/null && say "stopped $1 container(s)"
 }
+stop_hatchet_workers() { # TERM the Midship Hatchet worker wrapper + workers, then
+	# confirm they're gone (SIGKILL stragglers). Without this, fleetcom-start-all.sh
+	# added the workers but nothing stopped them: after stop/restart they lingered,
+	# orphaned from a torn-down Hatchet, and start-all's pgrep then saw them
+	# "already running" and skipped relaunch. The authoritative check is the worker
+	# module pattern (same one doctor + start-all use).
+	local i
+	pgrep -f 'midship\.heretic\.hatchet\.worker' >/dev/null 2>&1 || return 0
+	pkill -f 'scripts/run-workers?\.sh' 2>/dev/null || true   # wrapper (its own kill 0 cascades within its group)
+	pkill -f 'midship\.heretic\.hatchet\.worker' 2>/dev/null || true
+	for i in $(seq 1 12); do   # ~6s graceful grace before escalating
+		pgrep -f 'midship\.heretic\.hatchet\.worker' >/dev/null 2>&1 || { say "stopped hatchet workers"; return 0; }
+		sleep 0.5
+	done
+	pkill -9 -f 'scripts/run-workers?\.sh' 2>/dev/null || true
+	pkill -9 -f 'midship\.heretic\.hatchet\.worker' 2>/dev/null || true
+	say "hatchet workers force-killed"
+}
 
 say "cascade"
 kill_port 8088                                     # parcel client
@@ -75,6 +93,7 @@ brew services stop redis >/dev/null 2>&1
 if [ "${1:-}" = "--midship" ] && [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 	say "midship (requested via --midship)"
 	kill_port 8000; kill_port 5173
+	stop_hatchet_workers                            # consumer processes start-all launches (not port-bound)
 	(cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && docker compose down)
 	stop_containers_named hatchet-cli               # separate compose project; restarted by fleetcom-start-all.sh
 fi

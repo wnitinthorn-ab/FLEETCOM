@@ -81,7 +81,14 @@ if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 		say "WARNING: midship-turbo-broccoli's poetry env isn't set up — SKIPPING hatchet workers"
 	else
 		say "midship hatchet workers -> logs/midship-workers.log"
-		(cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && ENV=local_db nohup bash scripts/run-workers.sh > "$LOGS/midship-workers.log" 2>&1 &)
+		# Isolate the worker process group (set -m enables job control, so the
+		# backgrounded job gets its OWN pgid). run-workers.sh traps EXIT/INT/TERM
+		# and runs `kill 0`; without its own group that would signal start-all's
+		# entire group — the Midship API/frontend included — if the workers exit
+		# (e.g. all three fail on a stale Hatchet token). With its own group the
+		# kill 0 stays contained to the workers. fleetcom-stop-all.sh --midship
+		# tears them down (matched by the same 'run-workers?.sh' / worker pattern).
+		( cd "$MIDSHIP_TURBO_BROCCOLI_DIR" || exit 0; set -m; ENV=local_db nohup bash scripts/run-workers.sh > "$LOGS/midship-workers.log" 2>&1 & )
 	fi
 	if up 5173; then say "midship frontend already on 5173"; else
 		if [ ! -d "$MIDSHIP_FRONTEND_DIR/node_modules" ]; then
