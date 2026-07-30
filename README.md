@@ -95,7 +95,13 @@ man-style help (`./fleetcom help`, and `./fleetcom <command> --help`):
 ./fleetcom restart        # full bounce of all three stacks
 ./fleetcom stop           # stops all three stacks + tears down the log view
 ./fleetcom claude         # full restart + a Claude Code pane beside the logs (see below)
+./fleetcom tell "<msg>"   # hand a directive to a running supervisor Claude (see below)
 ./fleetcom help           # man-style overview of every command
+
+# start / stop / restart also take a single stack — act on just that one:
+./fleetcom restart cascade        # bounce only Cascade (others untouched)
+./fleetcom start midship          # boot only Midship
+./fleetcom stop auditboard        # stop only AuditBoard
 ```
 
 Each subcommand maps to a `fleetcom-<name>.sh` script that still works when run
@@ -174,6 +180,40 @@ inside this repo, auto-loads the skill's diagnose-and-self-heal playbook.
 - **Run it from a separate terminal window**, not from inside the
   `fleetcom-logs` tmux session — the restart tears that session down, and the
   script refuses to run from within it.
+
+## Claude as fleet supervisor
+
+Claude can act as the fleet's primary supervisor — review every service's logs,
+diagnose failures, and start/restart individual stacks or the whole fleet — and
+a **full-fleet restart preserves the supervising Claude** instead of killing it.
+
+**Two modes, decided by where Claude runs:**
+
+- **In-tmux supervisor** — launched by `fleetcom claude`, it lives in a pane of
+  the `fleetcom-logs` tmux session beside the live logs. `fleetcom stop` and
+  `fleetcom restart` run from there auto-detect the session and **preserve it**
+  (they skip the log-view teardown), so Claude is never torn down by its own
+  restart — and the dev daemons `start-all` launches survive the command
+  process exiting. This is the same `FLEETCOM_KEEP_LOGS` mechanism `fleetcom
+  claude` uses, now applied automatically whenever a command detects it's
+  running inside `fleetcom-logs`. A per-stack restart is quick; a full-fleet
+  restart takes minutes, so the supervisor runs it in the background and
+  watches `fleetcom doctor` for the stacks coming back.
+
+- **External Claude** — any normal session (cwd in FLEETCOM or elsewhere) drives
+  the fleet with the same verbs (restarts are synchronous, no session to
+  protect), and can hand work to a running supervisor with `./fleetcom tell
+  "<directive>"` — which types the message into the supervisor's `claude` pane
+  and submits it. If none is running, `./fleetcom claude` launches one.
+
+**Per-stack control:** `start`, `stop`, and `restart` each accept a single stack
+(`midship` | `auditboard` | `cascade`) to act on just that one — a per-stack
+start/stop/restart leaves the other stacks and the log view untouched. Prefer a
+single-stack bounce when only one stack is broken.
+
+Any Claude session with cwd in FLEETCOM auto-loads `CLAUDE.md` (the full
+supervisor role) and can invoke the `fleetcom-doctor` skill for the
+diagnose-and-self-heal playbook.
 
 ## Using your own start commands (start-all is optional)
 

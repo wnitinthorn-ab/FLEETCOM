@@ -50,7 +50,11 @@ render_overview() {
 	printf '  %-10s %s\n' doctor  "Show port + health status"
 	printf '  %-10s %s\n' logs    "Stream backend logs and error alerts"
 	printf '  %-10s %s\n' claude  "Full restart, then launch Claude Code beside the logs"
+	printf '  %-10s %s\n' tell    "Send a directive to the supervising Claude pane"
 	printf '\n'
+	h "Per-stack:"
+	printf "  start / stop / restart accept a stack — midship | auditboard | cascade —\n"
+	printf "  to act on just that one (default: all three).\n\n"
 	h "Global options:"
 	printf '  %-15s %s\n' "-h, --help"    "Show help"
 	printf '  %-15s %s\n' "-v, --version" "Show version"
@@ -75,32 +79,38 @@ render_cmd_help() {
 		;;
 	start)
 		h "NAME";        printf '    fleetcom start - boot the whole stack in dependency order\n\n'
-		h "USAGE";       printf '    fleetcom start [--no-logs] [--tmux | --windows]\n\n'
-		h "DESCRIPTION"; printf '    Starts Midship, AuditBoard, and Cascade, skipping anything already\n    running (each port is checked first). Ends by opening the log view in\n    your saved LOGS_VIEW preference.\n\n'
+		h "USAGE";       printf '    fleetcom start [midship|auditboard|cascade] [--no-logs] [--tmux | --windows]\n\n'
+		h "DESCRIPTION"; printf '    Starts Midship, AuditBoard, and Cascade, skipping anything already\n    running (each port is checked first). Ends by opening the log view in\n    your saved LOGS_VIEW preference. Pass a stack name to boot only that\n    one; the log view is only managed by the full-fleet start.\n\n'
 		h "OPTIONS"
+		printf '    midship | auditboard | cascade\n        Boot only that stack (default: all three).\n'
 		printf '    --no-logs\n        Do not auto-open the log panes after starting.\n'
 		printf '    --tmux\n        Open the logs in the tmux grid for this run (not persisted).\n'
 		printf '    --windows\n        Open the logs in separate Terminal windows for this run (not persisted).\n\n'
 		h "EXAMPLES"
-		printf '    fleetcom start\n    fleetcom start --tmux\n    fleetcom start --no-logs\n'
+		printf '    fleetcom start\n    fleetcom start cascade\n    fleetcom start --tmux\n    fleetcom start --no-logs\n'
 		;;
 	stop)
-		h "NAME";        printf '    fleetcom stop - stop all three stacks\n\n'
-		h "USAGE";       printf '    fleetcom stop\n\n'
-		h "DESCRIPTION"; printf '    Stops AuditBoard, Cascade, and Midship (including the Hatchet workers)\n    and tears down the log view.\n\n'
+		h "NAME";        printf '    fleetcom stop - stop all three stacks (or just one)\n\n'
+		h "USAGE";       printf '    fleetcom stop [midship|auditboard|cascade]\n\n'
+		h "DESCRIPTION"; printf '    Stops AuditBoard, Cascade, and Midship (including the Hatchet workers)\n    and tears down the log view. Pass a stack name to stop only that one\n    (the log view stays up). Run from inside the fleetcom-logs tmux session\n    (e.g. by the supervising Claude), it auto-preserves that session.\n\n'
+		h "OPTIONS"
+		printf '    midship | auditboard | cascade\n        Stop only that stack (default: all three).\n\n'
 		h "EXAMPLES"
-		printf '    fleetcom stop\n'
+		printf '    fleetcom stop\n    fleetcom stop cascade\n'
 		;;
 	restart)
-		h "NAME";        printf '    fleetcom restart - full bounce of all three stacks\n\n'
-		h "USAGE";       printf '    fleetcom restart [--no-logs] [--tmux | --windows]\n\n'
-		h "DESCRIPTION"; printf '    Runs "stop" then "start": a clean restart of all three stacks. Any\n    options are forwarded to start.\n\n'
+		h "NAME";        printf '    fleetcom restart - bounce all three stacks (or just one)\n\n'
+		h "USAGE";       printf '    fleetcom restart [midship|auditboard|cascade] [--no-logs] [--tmux | --windows]\n\n'
+		h "DESCRIPTION"; printf '    Runs "stop" then "start": a clean restart. Pass a stack name to bounce\n    only that one. Any options are forwarded to start.\n\n'
 		h "OPTIONS"
+		printf '    midship | auditboard | cascade\n        Restart only that stack (default: all three).\n'
 		printf '    --no-logs\n        Do not auto-open the log panes after restarting.\n'
 		printf '    --tmux\n        Open the logs in the tmux grid for this run (not persisted).\n'
 		printf '    --windows\n        Open the logs in separate Terminal windows for this run (not persisted).\n\n'
+		h "NOTES"
+		printf '    Supervisor-safe: run from inside the fleetcom-logs tmux session (e.g.\n    by the supervising Claude), stop-all auto-preserves that session, so the\n    restart never tears Claude down. A per-stack restart is quick; a\n    full-fleet restart takes minutes, so run it in the background and watch\n    "fleetcom doctor" to stay responsive.\n\n'
 		h "EXAMPLES"
-		printf '    fleetcom restart\n    fleetcom restart --windows\n'
+		printf '    fleetcom restart\n    fleetcom restart cascade\n    fleetcom restart --windows\n'
 		;;
 	doctor)
 		h "NAME";        printf '    fleetcom doctor - port and health status report\n\n'
@@ -131,6 +141,15 @@ render_cmd_help() {
 		h "EXAMPLES"
 		printf '    fleetcom claude\n    fleetcom claude --no-restart\n'
 		;;
+	tell)
+		h "NAME";        printf '    fleetcom tell - hand a directive to the supervising Claude\n\n'
+		h "USAGE";       printf '    fleetcom tell ["message"]\n\n'
+		h "DESCRIPTION"; printf '    Types a message into the "claude" pane of the fleetcom-logs tmux\n    session and submits it, so the supervising Claude acts on it. Lets a\n    human — or another Claude session running OUTSIDE the tmux — dispatch a\n    task to the in-tmux supervisor (which can read every log pane and knows\n    the session-preserving restart) without switching to its pane. With no\n    message, just reports whether a supervisor is running.\n\n'
+		h "NOTES"
+		printf '    Requires a running supervisor — start one with "fleetcom claude".\n    The message auto-submits; the supervisor queues it if mid-response.\n\n'
+		h "EXAMPLES"
+		printf '    fleetcom tell "cascade is wedged — restart just that stack and confirm"\n    fleetcom tell\n'
+		;;
 	*)
 		printf 'fleetcom: no help for %s\n' "$1" >&2
 		return 1
@@ -156,6 +175,7 @@ case "$sub" in
 	doctor)              script=fleetcom-doctor.sh ;;
 	logs)                script=fleetcom-logs.sh ;;
 	claude|start-claude) script=fleetcom-start-claude.sh ;;
+	tell)                script=fleetcom-tell.sh ;;
 	*)
 		printf 'fleetcom: unknown command "%s"\n\n' "$sub" >&2
 		printf 'usage: fleetcom <command> [options]   (try: fleetcom help)\n' >&2

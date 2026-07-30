@@ -17,15 +17,22 @@ up()  { lsof -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 # args (recognized anywhere; anything unrecognized is ignored, not an error):
 #   --no-logs             don't auto-open the log view at the end
 #   --tmux | --windows    force that log view for this run only (not persisted)
+#   midship | auditboard | cascade    boot only that one stack (default: all)
 OPEN_LOGS=1
 LOGS_VIEW_OVERRIDE=""
+TARGET=all
 for arg in "$@"; do
 	case "$arg" in
 		--no-logs) OPEN_LOGS=0 ;;
 		--tmux)    LOGS_VIEW_OVERRIDE=tmux ;;
 		--windows) LOGS_VIEW_OVERRIDE=windows ;;
+		midship|auditboard|cascade|all) TARGET="$arg" ;;
 	esac
 done
+# want <stack>: true when this run should act on that stack — either it's the
+# explicit target or we're doing the default "all". Lets a per-stack
+# `fleetcom start|restart <stack>` boot one stack without touching the others.
+want() { [ "$TARGET" = all ] || [ "$TARGET" = "$1" ]; }
 
 # nearly everything below needs the docker daemon; launch it if it's down
 if ! docker info >/dev/null 2>&1; then
@@ -38,6 +45,7 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 # --- Midship (fixed ports; owns 5432/6379/8080/9980/8000/5173) --------------
+if want midship; then
 if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 	say "midship: docker services"
 	(cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && docker compose up -d)
@@ -101,8 +109,10 @@ else
 	say "WARNING: midship-turbo-broccoli not found at $MIDSHIP_TURBO_BROCCOLI_DIR — SKIPPING ALL OF MIDSHIP"
 	say "WARNING: fix the MIDSHIP_*_DIR paths in local.conf (or re-run fleetcom-onboard.sh and use [p] at the clone offer)"
 fi
+fi  # want midship
 
-# --- AuditBoard --------------------------------------------------------------
+# --- AuditBoard (guarded by `want auditboard`) -------------------------------
+if want auditboard; then
 say "AB native databases (postgres 5433, redis 6382)"
 ensure_native() { # port, brew service name
 	up "$1" && return 0
@@ -195,8 +205,10 @@ if up 9006; then say "AB client already on 9006"; else
 		(cd "$AB_FRONTEND_DIR" && nohup direnv exec "$DEVENV" pnpm start --reuse-last > "$LOGS/ab-client.log" 2>&1 &)
 	fi
 fi
+fi  # want auditboard
 
-# --- Cascade -----------------------------------------------------------------
+# --- Cascade (guarded by `want cascade`) -------------------------------------
+if want cascade; then
 say "cascade: docker services (local image build; staged startup — parallel first-time"
 say "  layer extraction of the 2.6GB server image can transiently fill the Docker VM disk)"
 (cd "$CASCADE" \
@@ -221,10 +233,18 @@ if up 8088; then say "cascade client already on 8088"; else
 		say "WARNING: neither volta nor nvm found — SKIPPING the cascade client (install volta, then re-run)"
 	fi
 fi
+fi  # want cascade
 
-say "done — run ./fleetcom-doctor.sh to verify. AB: https://localhost:9002  Cascade: http://localhost:8088"
+if [ "$TARGET" = all ]; then
+	say "done — run ./fleetcom-doctor.sh to verify. AB: https://localhost:9002  Cascade: http://localhost:8088"
+else
+	say "done ($TARGET only) — run ./fleetcom-doctor.sh to verify"
+fi
 
-if [ "$OPEN_LOGS" = 1 ] && [ -t 0 ]; then
+# Only the full-fleet boot manages the log view; a per-stack start leaves the
+# existing log panes (tail -F / watch) in place — they pick up the new output
+# on their own.
+if [ "$TARGET" = all ] && [ "$OPEN_LOGS" = 1 ] && [ -t 0 ]; then
 	say "opening backend logs (./fleetcom-logs.sh reopens later; --no-logs skips this; --tmux/--windows switches view)"
 	# Converge on a single fresh log view: tear down any existing session/windows
 	# first. No-op on a clean boot; on a re-run it closes the stale panes/windows

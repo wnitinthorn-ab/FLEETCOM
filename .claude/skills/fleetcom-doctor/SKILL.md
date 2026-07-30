@@ -62,10 +62,34 @@ asking for help is using, so use it.
 | First-time setup on this machine | `./fleetcom-onboard.sh` |
 | Repo paths changed / re-onboarding | `./fleetcom-onboard.sh --reconfigure` |
 | Boot everything (skips what's already up) | `./fleetcom-start-all.sh` |
+| Boot / stop / bounce ONE stack | `./fleetcom start\|stop\|restart <midship\|auditboard\|cascade>` |
 | Check port/health status | `./fleetcom-doctor.sh` |
 | Watch backend logs | `./fleetcom-logs.sh` |
 | Full bounce of all three stacks | `./fleetcom-restart-all.sh` |
 | Stop all three stacks | `./fleetcom-stop-all.sh` |
+| Hand a directive to a running supervisor Claude | `./fleetcom tell "<msg>"` |
+
+## Supervisor mode (Claude orchestrating the fleet)
+
+Claude is the fleet's supervisor. If you're running **inside the
+`fleetcom-logs` tmux session** (check:
+`[ "$(tmux display-message -p '#S' 2>/dev/null)" = fleetcom-logs ]`), that
+session is your own home. The lifecycle verbs auto-protect it:
+
+- `./fleetcom stop`/`restart` detect this session and **keep it alive** (they
+  skip the log-view teardown), so they won't tear you down mid-command. The dev
+  daemons `start-all` launches also survive the command exiting — so a plain
+  `./fleetcom restart [stack]` is safe here.
+- A **per-stack** bounce (`restart cascade`) is quick — run it synchronously.
+  A **full-fleet** restart takes minutes, so run it in the **background** to
+  stay responsive, then watch `./fleetcom doctor` for the stacks coming back.
+  Prefer a single-stack bounce when only one stack is broken (lower blast
+  radius).
+
+An **external** Claude (not in the tmux) drives the fleet the same way with
+synchronous restarts, and can hand work to a running supervisor with
+`./fleetcom tell "<directive>"` (or launch one with `./fleetcom claude`). Full
+role: `CLAUDE.md` in the repo root.
 
 ## The self-heal loop
 

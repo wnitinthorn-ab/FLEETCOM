@@ -72,11 +72,32 @@ stop_hatchet_workers() { # TERM the Midship Hatchet worker wrapper + workers, th
 	say "hatchet workers force-killed"
 }
 
+# Optional positional target: stop only one stack (default: all).
+TARGET=all
+for arg in "$@"; do case "$arg" in midship|auditboard|cascade|all) TARGET="$arg" ;; esac; done
+want() { [ "$TARGET" = all ] || [ "$TARGET" = "$1" ]; }
+
+# Supervisor self-protection: when a Claude session running INSIDE the
+# fleetcom-logs tmux session invokes stop/restart, that session is Claude's own
+# home — tearing it down would kill the supervising Claude mid-command. So
+# auto-enable FLEETCOM_KEEP_LOGS whenever we detect we're inside it. (An
+# explicit FLEETCOM_KEEP_LOGS from fleetcom-start-claude.sh still wins; this
+# only fills it in when unset.) Same session-name detection as
+# fleetcom-start-claude.sh's guard.
+if [ -z "${FLEETCOM_KEEP_LOGS:-}" ] && [ -n "${TMUX:-}" ] \
+	&& [ "$(tmux display-message -p '#S' 2>/dev/null)" = fleetcom-logs ]; then
+	FLEETCOM_KEEP_LOGS=1
+	say "supervisor session detected (inside fleetcom-logs) — keeping the log/claude session alive"
+fi
+
+if want cascade; then
 say "cascade"
 kill_port 8088                                     # parcel client
 (cd "$CASCADE" && docker-compose -f docker-compose.yml -f docker-compose-build.yml \
 	-f docker-compose.override.yml down 2>/dev/null)
+fi
 
+if want auditboard; then
 say "auditboard"
 stop_containers_named caddy                        # caddy runs in docker — 9002 is a proxied port
 kill_port 9006; kill_port 9005                     # client + login vite (9005 orphans otherwise)
@@ -94,7 +115,9 @@ kill_port 9001; kill_port 9003                     # api v1/v2 (turbo children f
 	-f "$HERE/devenv.override.yml" stop conductor 2>/dev/null) || true
 brew services stop postgresql@17 >/dev/null 2>&1
 brew services stop redis >/dev/null 2>&1
+fi  # want auditboard
 
+if want midship; then
 if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 	say "midship"
 	kill_port 8000; kill_port 5173
@@ -102,15 +125,25 @@ if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 	(cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && docker compose down)
 	stop_containers_named hatchet-cli               # separate compose project; restarted by fleetcom-start-all.sh
 fi
+fi  # want midship
 
-tmux kill-session -t fleetcom-ab-api 2>/dev/null && say "AB API tmux session closed" || true
-# FLEETCOM_KEEP_LOGS: fleetcom-start-claude.sh runs the restart INSIDE the log
-# session's claude pane, so it sets this to stop us from tearing that session
-# down mid-restart. Normal `stop` leaves it unset and closes the log view.
-if [ -n "${FLEETCOM_KEEP_LOGS:-}" ]; then
-	say "keeping the log session (FLEETCOM_KEEP_LOGS set)"
-else
-	"$HERE/fleetcom-logs.sh" --kill   # kills the logs tmux session and requests close on any spawned Terminal windows (may need a per-window click to confirm)
+# The AB API runs in its own tmux session (fleetcom-ab-api) for the pty; it's
+# rebuilt by fleetcom-start-all.sh, so close it whenever AB is in scope.
+if want auditboard; then
+	tmux kill-session -t fleetcom-ab-api 2>/dev/null && say "AB API tmux session closed" || true
 fi
 
-say "done"
+# Only a full-fleet stop manages the log view; a per-stack stop leaves it up.
+if [ "$TARGET" = all ]; then
+	# FLEETCOM_KEEP_LOGS: fleetcom-start-claude.sh runs the restart INSIDE the log
+	# session's claude pane, and a supervisor Claude inside fleetcom-logs sets it
+	# above — either way it stops us from tearing that session down mid-restart.
+	# Normal `stop` from a plain terminal leaves it unset and closes the log view.
+	if [ -n "${FLEETCOM_KEEP_LOGS:-}" ]; then
+		say "keeping the log session (FLEETCOM_KEEP_LOGS set)"
+	else
+		"$HERE/fleetcom-logs.sh" --kill   # kills the logs tmux session and requests close on any spawned Terminal windows (may need a per-window click to confirm)
+	fi
+fi
+
+if [ "$TARGET" = all ]; then say "done"; else say "done ($TARGET only)"; fi

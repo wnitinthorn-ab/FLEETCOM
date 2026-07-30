@@ -168,6 +168,11 @@ fi
 # --- pane map: what each tmux pane exposes, for claude to read on startup ---
 {
 	printf '# FLEETCOM tmux pane map (generated %s)\n\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+	printf 'You are the FLEETCOM supervisor (running inside the fleetcom-logs tmux\n'
+	printf 'session). ./fleetcom stop|restart [midship|auditboard|cascade] auto-\n'
+	printf 'preserve this session, so you can restart the whole fleet or a single\n'
+	printf 'stack without killing yourself (run a full-fleet restart in the\n'
+	printf 'background; watch ./fleetcom doctor). See CLAUDE.md for the full role.\n\n'
 	printf 'Pull a pane snapshot on demand — do not tail continuously:\n'
 	printf '  tmux capture-pane -p -t <pane_id> -S -   (full scrollback)\n'
 	printf '  tmux capture-pane -p -t <pane_id>        (visible screen only)\n\n'
@@ -190,7 +195,7 @@ fi
 say "pane map -> $MAP"
 
 if [ "$CLAUDE_PANE_IS_NEW" = true ]; then
-	CLAUDE_PROMPT="Read $MAP for the FLEETCOM tmux session/pane layout. Pull pane output on demand with tmux capture-pane -p -t <pane_id> instead of tailing continuously."
+	CLAUDE_PROMPT="You are the FLEETCOM supervisor. Read $MAP for the tmux session/pane layout and CLAUDE.md for your role. Pull pane output on demand with tmux capture-pane -p -t <pane_id> instead of tailing continuously; restart the fleet or a single stack with ./fleetcom restart [stack] (auto-preserves this session; run a full-fleet restart in the background)."
 	# On a restart, run stop+start IN the claude pane first (visible, with the log
 	# panes showing the boot), then launch Claude. FLEETCOM_KEEP_LOGS keeps the log
 	# session we're attached to alive through stop-all (it would otherwise kill it).
