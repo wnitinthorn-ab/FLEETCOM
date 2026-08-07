@@ -176,6 +176,7 @@ case "$sub" in
 	logs)                script=fleetcom-logs.sh ;;
 	claude|start-claude) script=fleetcom-start-claude.sh ;;
 	tell)                script=fleetcom-tell.sh ;;
+	verify-optro)        script=fleetcom-verify-optro.sh ;;
 	*)
 		printf 'fleetcom: unknown command "%s"\n\n' "$sub" >&2
 		printf 'usage: fleetcom <command> [options]   (try: fleetcom help)\n' >&2
