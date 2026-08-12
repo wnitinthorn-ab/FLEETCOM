@@ -52,6 +52,30 @@ ensure_tmux() {
 	return 1
 }
 
+# git_branch DIR: the branch checked out in DIR, for display in a pane/window
+# title. Short SHA when detached. Empty when DIR isn't a git checkout (repo not
+# cloned, path unset, or a plain directory) so callers can drop the parens
+# entirely rather than render an empty pair.
+git_branch() {
+	local dir="${1:-}" b
+	[ -n "$dir" ] || return 0
+	[ -d "$dir" ] || return 0
+	b="$(git -C "$dir" rev-parse --abbrev-ref HEAD 2>/dev/null)" || return 0
+	if [ "$b" = "HEAD" ]; then                       # detached — show the commit
+		b="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)" || return 0
+	fi
+	printf '%s' "$b"
+}
+
+# title_with_branch LABEL [DIR]: "label (branch)", or a bare "label" when DIR is
+# empty or isn't a checkout. LABEL stays the leading token on purpose —
+# fleetcom-start-claude.sh's reorder_backends matches pane titles by PREFIX
+# (index($2,t)==1), so the suffix is free but the head of the string is not.
+title_with_branch() {
+	local b; b="$(git_branch "${2:-}")"
+	if [ -n "$b" ]; then printf '%s (%s)' "$1" "$b"; else printf '%s' "$1"; fi
+}
+
 # The tmux log session built by fleetcom-logs.sh. (fleetcom-logs.sh and
 # fleetcom-start-claude.sh still carry their own SESSION= copies of this name.)
 FLEETCOM_LOG_SESSION="fleetcom-logs"
