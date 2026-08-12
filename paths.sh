@@ -51,3 +51,33 @@ ensure_tmux() {
 	printf '[fleetcom] tmux install did not complete — using separate windows.\n' >&2
 	return 1
 }
+
+# The tmux log session built by fleetcom-logs.sh. (fleetcom-logs.sh and
+# fleetcom-start-claude.sh still carry their own SESSION= copies of this name.)
+FLEETCOM_LOG_SESSION="fleetcom-logs"
+
+# guard_not_in_log_session PURPOSE: refuse to run a command that tears the log
+# session down from inside that very session. `fleetcom stop`/`restart` end by
+# running fleetcom-logs.sh --kill, so typing either one in a log pane kills the
+# pane you typed it in, mid-teardown — which is how you end up with a rebuilt
+# log grid and no claude pane (start-all reopens the logs, but nothing in that
+# path re-adds claude).
+#
+# FLEETCOM_KEEP_LOGS is the sanctioned way to bounce the stacks from inside the
+# session — fleetcom-start-claude.sh sets it to run the restart in the claude
+# pane, and fleetcom-stop-all.sh then skips the --kill. So the guard stands down
+# whenever it's set: with the teardown disabled there's no rug left to pull.
+# Returns 1 (after explaining) when the caller should abort, else 0. Written as
+# plain ifs, not an && chain, so it's safe under the callers' set -e.
+guard_not_in_log_session() {
+	local purpose="${1:-this command}"
+	if [ -n "${FLEETCOM_KEEP_LOGS:-}" ]; then return 0; fi
+	if [ -z "${TMUX:-}" ]; then return 0; fi
+	if [ "$(tmux display-message -p '#S' 2>/dev/null)" != "$FLEETCOM_LOG_SESSION" ]; then return 0; fi
+	printf "[fleetcom] ERROR: don't run %s from inside the '%s' tmux session — it tears\n" "$purpose" "$FLEETCOM_LOG_SESSION" >&2
+	printf '[fleetcom]        that session down, killing the pane you typed this in.\n' >&2
+	printf '[fleetcom]        Detach (Ctrl-b d) or open a separate terminal window, then re-run.\n' >&2
+	printf '[fleetcom]        To bounce the stacks without losing this session, run instead:\n' >&2
+	printf '[fleetcom]            FLEETCOM_KEEP_LOGS=1 fleetcom stop && fleetcom start --no-logs\n' >&2
+	return 1
+}

@@ -8,6 +8,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 DEVENV="$AB_DEVENV_DIR"
 CASCADE="$CASCADE_DIR"
 
+# Bail before stopping anything if we'd be killing our own log pane (see
+# guard_not_in_log_session in paths.sh). Stands down under FLEETCOM_KEEP_LOGS,
+# which is how fleetcom-start-claude.sh legitimately runs us in the claude pane.
+guard_not_in_log_session 'fleetcom stop' || exit 1
+
 say() { printf '\033[36m[stop-all]\033[0m %s\n' "$*"; }
 kill_port() { # TERM whatever LISTENs on a port, then WAIT until it's actually
 	# released, escalating to KILL — but NEVER Docker: on macOS,
