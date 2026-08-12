@@ -113,14 +113,6 @@ default, pass `--tmux` / `--windows` straight to `fleetcom start` (or
 | **cascade** — docker logs (web/ws/c3) | **alerts** — ERROR/WARN merged from all three |
 | **doctor** — live `fleetcom-doctor.sh`, refreshed every 10s | |
 
-Each repo-backed stream is labelled with the branch it's running —
-`optro-api (main)`, `midship-api (hybrid-testing-m0)`, `cascade (main)` — in
-both the tmux pane titles and the Terminal window titles (`fleetcom claude`
-inherits the tmux ones). A detached checkout shows the short SHA instead. The
-label is read when the view is built, so after switching branches rebuild it
-(`fleetcom logs`) to refresh. **alerts** and **doctor** carry no branch —
-neither is a single repo's stream.
-
 The **doctor** stream re-runs the port/health report on a loop so you watch
 services flip ✓/✗ as they come up and down (uses `watch` if installed, else a
 plain refresh loop). Like the others, it's torn down by `fleetcom-stop-all.sh`.

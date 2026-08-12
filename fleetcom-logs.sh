@@ -140,25 +140,20 @@ wrap() { # cmd, workdir
 
 # ---------------------------------------------------------------- windows ---
 if [ "$MODE" = "windows" ]; then
-	# branch-dir (4th arg, optional) only enriches the DISPLAYED title. The
-	# win-<name>.command filename keeps the bare name: --kill closes windows by
-	# matching those exact filenames (see close_terminal_windows above), so
-	# folding a branch into $1 would strand every window it opened.
-	open_win() { # name, command, workdir, [branch-dir]
-		local f="$LOGS/win-$1.command" title
-		title="$(title_with_branch "$1" "${4:-}")"
+	open_win() { # name, command, workdir
+		local f="$LOGS/win-$1.command"
 		{
 			printf '#!/bin/bash\n'
-			printf 'printf "\\033]0;%s\\007"\n' "$title"   # window title
+			printf 'printf "\\033]0;%s\\007"\n' "$1"   # window title
 			printf 'clear\n'
 			printf '%s\n' "$(wrap "$2" "$3")"
 		} > "$f"
 		chmod +x "$f"
 		open "$f"
 	}
-	open_win optro-api   "$OPTRO_CMD"   "$AB_BACKEND_DIR"             "$AB_BACKEND_DIR"
-	open_win midship-api "$MIDSHIP_CMD" "$MIDSHIP_TURBO_BROCCOLI_DIR" "$MIDSHIP_TURBO_BROCCOLI_DIR"
-	open_win cascade     "$CASCADE_CMD" "$CASCADE_DIR"                "$CASCADE_DIR"
+	open_win optro-api   "$OPTRO_CMD"   "$AB_BACKEND_DIR"
+	open_win midship-api "$MIDSHIP_CMD" "$MIDSHIP_TURBO_BROCCOLI_DIR"
+	open_win cascade     "$CASCADE_CMD" "$CASCADE_DIR"
 	open_win alerts      "$ALERTS_CMD"  "$HERE"
 	open_win doctor      "$DOCTOR_CMD"  "$HERE"
 	say "opened 5 Terminal windows (re-open any later from $LOGS/win-*.command; Ctrl-C drops to a shell in that repo, type exit to close)"
@@ -185,14 +180,9 @@ P_ALERTS=$(tmux split-window  -v -t "$P_MIDSHIP" -P -F '#{pane_id}' "$(wrap "$AL
 P_DOCTOR=$(tmux split-window  -v -t "$P_CASCADE" -P -F '#{pane_id}' "$(wrap "$DOCTOR_CMD"  "$HERE")")
 tmux select-layout -t "$SESSION:backends" tiled
 
-# Repo-backed streams carry the branch they're running: "cascade (main)". Read
-# once, here — a title is static, so it reflects the checkout as of session
-# build; rebuild the view (fleetcom logs) after switching branches. alerts and
-# doctor get no branch: they aren't a repo's stream (alerts spans all three,
-# doctor is a health report), and "alerts (ERROR/WARN)" is already parenthesized.
-tmux select-pane -t "$P_OPTRO"   -T "$(title_with_branch optro-api   "$AB_BACKEND_DIR")"
-tmux select-pane -t "$P_MIDSHIP" -T "$(title_with_branch midship-api "$MIDSHIP_TURBO_BROCCOLI_DIR")"
-tmux select-pane -t "$P_CASCADE" -T "$(title_with_branch cascade     "$CASCADE_DIR")"
+tmux select-pane -t "$P_OPTRO"   -T "optro-api"
+tmux select-pane -t "$P_MIDSHIP" -T "midship-api"
+tmux select-pane -t "$P_CASCADE" -T "cascade"
 tmux select-pane -t "$P_ALERTS"  -T "alerts (ERROR/WARN)"
 tmux select-pane -t "$P_DOCTOR"  -T "doctor"
 tmux set-option  -t "$SESSION" pane-border-status top
