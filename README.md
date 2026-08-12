@@ -372,6 +372,36 @@ want it. If you see this error anyway, the API was probably started by hand
 with `nohup`/backgrounding — bounce it: kill whatever holds 9001/9003 and
 re-run `./fleetcom-start-all.sh`.
 
+### AB API (9001/9003) crash-loops on @soxhub/consts: "does not provide an export named 'default'"
+
+**Symptoms**: 9001/9003 never come up — doctor keeps reporting them NOT
+LISTENING while `logs/ab-api.log` (and the alerts pane) repeats a module error
+along the lines of `The requested module '@soxhub/consts' does not provide an
+export named 'default'`. Rebuilding by hand appears to fix it, and then the
+next `bin/start-api` brings it straight back.
+
+**Cause**: turbo has a **bad cached build artifact** for `utils/core`
+(`@soxhub/utils-core`). `bin/start-api` builds workspace dependencies through
+turbo on every start, so each start restores that poisoned artifact from cache
+— silently undoing the rebuild you just did. That's the trap: the plain
+rebuild really does fix the running process, so it looks solved, and the fix
+is reverted the next time you boot rather than at the moment you look.
+
+**Fix**: force a cache-bypassing rebuild of the poisoned package, from
+**auditboard-backend** (not the frontend repo — `@soxhub/utils-core` is a
+backend workspace, `utils/core/`):
+
+```bash
+cd "$AB_BACKEND_DIR" && pnpm ab turbo _:build --filter=@soxhub/utils-core --force
+```
+
+`--force` is the load-bearing part — without it turbo hands back the same bad
+artifact from cache and nothing changes. Then restart the API (`./fleetcom
+restart`, or just the AB stack). Because the symptom is a crash-loop on
+startup, the AB API ports staying NOT LISTENING across a restart — with the
+module error in the log rather than a port conflict — is what distinguishes
+this from the stale-code/EADDRINUSE case above.
+
 ### Workflows page is empty / shows "Install and configure services from the new Integrations module"
 
 The Analytics service isn't enabled for this AB site. Enable it in the app:
