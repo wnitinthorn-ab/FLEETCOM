@@ -161,22 +161,82 @@ docker compose version --short | awk -F. '{ exit !($1 > 2 || ($1 == 2 && $2 >= 2
 # containers are memory-hungry. Requires a Docker Desktop restart to apply.
 DOCKER_SETTINGS="$HOME/Library/Group Containers/group.com.docker/settings-store.json"
 WANT_MEM_MIB=12288 WANT_DISK_MIB=122880
-if [ -f "$DOCKER_SETTINGS" ] && ! python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); sys.exit(0 if s.get("MemoryMiB",0)>=int(sys.argv[2]) and s.get("DiskSizeMiB",0)>=int(sys.argv[3]) else 1)' "$DOCKER_SETTINGS" "$WANT_MEM_MIB" "$WANT_DISK_MIB"; then
+
+# Three outcomes, not two: provisioned / under-provisioned / UNREADABLE.
+# ~/Library/Group Containers is TCC-protected on macOS, so a terminal without
+# Full Disk Access gets EPERM here even though settings-store.json is itself
+# world-readable. The old check treated any non-zero exit as "under-provisioned",
+# so an unreadable file reported specific MiB numbers it had never read — and
+# accepting the offer quit Docker Desktop (stopping every container), hit the
+# same EPERM on the write, and restarted Docker having changed nothing.
+# Exit codes: 0 ok, 1 too low, 2 unreadable (TCC), 3 missing/malformed.
+docker_settings_state() {
+	python3 - "$DOCKER_SETTINGS" "$WANT_MEM_MIB" "$WANT_DISK_MIB" 2>/dev/null <<'DOCKER_SETTINGS_PY'
+import json, sys
+try:
+    s = json.load(open(sys.argv[1]))
+except PermissionError:
+    sys.exit(2)
+except Exception:
+    sys.exit(3)
+sys.exit(0 if s.get("MemoryMiB", 0) >= int(sys.argv[2])
+           and s.get("DiskSizeMiB", 0) >= int(sys.argv[3]) else 1)
+DOCKER_SETTINGS_PY
+}
+
+say_docker_manual() { # the fallback that always works, whatever went wrong
+	say "  Set them by hand instead: Docker Desktop > Settings > Resources >"
+	say "  Memory >= $((WANT_MEM_MIB / 1024))GB, Disk >= $((WANT_DISK_MIB / 1024))GB, then Apply & Restart."
+}
+
+docker_settings_state; DOCKER_STATE=$?
+case "$DOCKER_STATE" in
+0)
+	say "Docker Desktop resources already >= ${WANT_MEM_MIB}MiB memory / ${WANT_DISK_MIB}MiB disk"
+	;;
+2)
+	say "WARNING: cannot READ Docker Desktop's settings — macOS blocked it (not a file-permission issue)."
+	say "  '~/Library/Group Containers' is TCC-protected: your terminal needs Full Disk Access."
+	say "  System Settings > Privacy & Security > Full Disk Access > + > your terminal app,"
+	say "  then FULLY QUIT and reopen the terminal (a reload is not enough) and re-run this."
+	say_docker_manual
+	say "  Skipping the resource check — cannot verify or change it from here."
+	;;
+3)
+	say "WARNING: Docker Desktop settings not found or unreadable at:"
+	say "  $DOCKER_SETTINGS"
+	say "  (Docker Desktop not installed yet, or a version that stores settings elsewhere.)"
+	say_docker_manual
+	;;
+1)
 	say "Docker Desktop is below ${WANT_MEM_MIB}MiB memory / ${WANT_DISK_MIB}MiB disk"
 	yn=n
 	[ -t 0 ] && { read -r -p "[onboard] Restart Docker Desktop now to apply? ALL running containers stop; re-run fleetcom-start-all.sh after. [y/N] " yn || true; }
 	if [[ "$yn" =~ ^[Yy]$ ]]; then
-		osascript -e 'quit app "Docker Desktop"' 2>/dev/null || true
-		sleep 10
-		python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); s["MemoryMiB"]=max(s.get("MemoryMiB",0),int(sys.argv[2])); s["DiskSizeMiB"]=max(s.get("DiskSizeMiB",0),int(sys.argv[3])); json.dump(s,open(p,"w"),indent=1)' "$DOCKER_SETTINGS" "$WANT_MEM_MIB" "$WANT_DISK_MIB"
-		open -a "Docker Desktop"
-		say "waiting for docker engine..."
-		until docker info >/dev/null 2>&1; do sleep 3; done
-		say "docker is back — remember: midship compose services do NOT auto-restart (run fleetcom-start-all.sh)"
+		# Prove we can write BEFORE quitting Docker — otherwise a failure here
+		# costs the user every running container in exchange for nothing.
+		if ! python3 -c 'open(__import__("sys").argv[1], "a").close()' "$DOCKER_SETTINGS" 2>/dev/null; then
+			say "ERROR: settings file is readable but NOT writable — leaving Docker Desktop running."
+			say_docker_manual
+		else
+			osascript -e 'quit app "Docker Desktop"' 2>/dev/null || true
+			sleep 10
+			if python3 -c 'import json,sys; p=sys.argv[1]; s=json.load(open(p)); s["MemoryMiB"]=max(s.get("MemoryMiB",0),int(sys.argv[2])); s["DiskSizeMiB"]=max(s.get("DiskSizeMiB",0),int(sys.argv[3])); json.dump(s,open(p,"w"),indent=1)' "$DOCKER_SETTINGS" "$WANT_MEM_MIB" "$WANT_DISK_MIB" 2>/dev/null; then
+				say "applied — Memory >= ${WANT_MEM_MIB}MiB, Disk >= ${WANT_DISK_MIB}MiB"
+			else
+				say "ERROR: could not write the settings — restarting Docker Desktop unchanged."
+				say_docker_manual
+			fi
+			open -a "Docker Desktop"
+			say "waiting for docker engine..."
+			until docker info >/dev/null 2>&1; do sleep 3; done
+			say "docker is back — remember: midship compose services do NOT auto-restart (run fleetcom-start-all.sh)"
+		fi
 	else
 		say "skipped — set Memory >=12GB and Disk >=120GB in Docker Desktop > Settings > Resources"
 	fi
-fi
+	;;
+esac
 
 # --- 1. Homebrew Postgres -> 5433 -----------------------------------------
 if grep -qE '^port = 5433' "$PG_CONF"; then

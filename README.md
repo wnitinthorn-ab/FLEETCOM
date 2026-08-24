@@ -321,6 +321,39 @@ auto-provisioned on first login; no Cascade seeding required.
 
 ## Troubleshooting
 
+### `fleetcom onboard`: PermissionError on Docker's settings-store.json
+
+**Symptoms**: on a fresh machine, `./fleetcom onboard` prints a raw Python
+traceback ending in `PermissionError: [Errno 1] Operation not permitted:
+'/Users/<you>/Library/Group Containers/group.com.docker/settings-store.json'`,
+immediately followed by `[onboard] Docker Desktop is below 12288MiB memory /
+122880MiB disk`. Answering `y` to the restart prompt quits Docker Desktop,
+throws the same traceback again, and brings Docker back with nothing changed.
+
+**Cause**: macOS **TCC** (privacy protection), *not* file permissions.
+`~/Library/Group Containers` is `drwx------` and TCC-protected, so a terminal
+without **Full Disk Access** gets `EPERM` opening anything inside it — even
+though `settings-store.json` is itself world-readable (`-rw-r--r--`). This is
+why it works on one machine and not another: the difference is whether that
+terminal app was ever granted Full Disk Access.
+
+Note the "below 12288MiB" line is a **false report** — onboard could not read
+the file, so it never saw your actual values. (Onboard now separates
+"unreadable" from "under-provisioned"; on an older checkout you will still see
+the misleading version.)
+
+**Fix**: grant your terminal Full Disk Access — System Settings > Privacy &
+Security > Full Disk Access > **+** > your terminal app (Terminal, iTerm,
+Ghostty, …) — then **fully quit and reopen the terminal**. A new tab or window
+is not enough; the grant is picked up when the app launches. Then re-run.
+
+Prefer not to grant it? Skip the automation entirely and set the two values by
+hand in Docker Desktop > Settings > Resources: **Memory >= 12GB**, **Disk >=
+120GB**, then Apply & Restart. That is the only thing the check was doing.
+
+Either way, check those two values yourself — the warning that sent you here
+was not based on having read them.
+
 ### AB app stalls at "Loading appears to be stalled" / blank login page
 
 **Symptoms**: `https://localhost:9002` never finishes booting (or the login
