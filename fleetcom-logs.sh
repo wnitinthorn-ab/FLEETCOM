@@ -112,14 +112,17 @@ MIDSHIP_CMD="tail -n 80 -F '$LOGS/midship-api.log'"
 CASCADE_CMD="cd '$CASCADE_DIR' && while :; do $CASCADE_COMPOSE logs -f --tail 80 web ws c3 c3manager; echo '[cascade logs detached — containers restarting? re-following in 2s (Ctrl-C for a shell)]'; sleep 2; done"
 ALERTS_CMD="{ tail -n 0 -F '$LOGS/ab-api.log' '$LOGS/midship-api.log' & { cd '$CASCADE_DIR' && while :; do $CASCADE_COMPOSE logs -f --tail 0 web ws c3 c3manager 2>&1; sleep 2; done; } & wait; } | grep --line-buffered -iE '(errors?|warn(ing)?|fatal|exceptions?|traceback)[: ]'"
 # doctor: live port/health report, refreshed as services come up and down.
-# `watch` isn't on macOS by default, so fall back to a clear+sleep loop (both
-# preserve doctor's color). `|| true` so a non-zero doctor run (some check
-# failing — the normal case while booting) doesn't stop the loop.
-if command -v watch >/dev/null 2>&1; then
-	DOCTOR_CMD="watch -c -n 10 '$HERE/fleetcom-doctor.sh'"
-else
-	DOCTOR_CMD="while :; do clear; '$HERE/fleetcom-doctor.sh' || true; printf '\n(doctor — refreshing every 10s; Ctrl-C to stop. brew install watch for a nicer view)\n'; sleep 10; done"
-fi
+# Deliberately a clear+sleep loop, NEVER `watch` (even when installed): watch
+# draws on the terminal's alternate screen, which has no scrollback, so a
+# report taller than the pane is clipped with no way to reach the rest (tmux
+# forwards wheel events to alternate-screen apps, and watch ignores them; the
+# pane's copy-mode history is empty too). watch also repaints only changed
+# cells, so between status changes the pane looks frozen. The loop prints to
+# the normal screen instead: every pass is a visible repaint and past reports
+# stay in scrollback. `|| true` so a non-zero doctor run (some check failing,
+# the normal case while booting) doesn't stop the loop. A pass itself takes
+# ~10s, so the effective refresh is roughly every 20s.
+DOCTOR_CMD="while :; do clear; '$HERE/fleetcom-doctor.sh' || true; printf '\n(doctor - re-runs 10s after each pass; Ctrl-C to stop)\n'; sleep 10; done"
 
 # Wrap a stream command so the pane/window stays usable instead of dying:
 #  - cd into the stream's repo first, so you land somewhere you can work

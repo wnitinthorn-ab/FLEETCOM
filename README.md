@@ -114,8 +114,11 @@ default, pass `--tmux` / `--windows` straight to `fleetcom start` (or
 | **doctor** — live `fleetcom-doctor.sh`, refreshed every 10s | |
 
 The **doctor** stream re-runs the port/health report on a loop so you watch
-services flip ✓/✗ as they come up and down (uses `watch` if installed, else a
-plain refresh loop). Like the others, it's torn down by `fleetcom-stop-all.sh`.
+services flip ✓/✗ as they come up and down (a pass takes ~10s, so it repaints
+roughly every 20s). It deliberately does NOT use `watch` even when installed:
+watch draws on the alternate screen, which clips a report taller than the
+pane, breaks tmux mouse scrolling, and only repaints changed cells, so the
+pane looks frozen. Like the others, it's torn down by `fleetcom-stop-all.sh`.
 
 tmux basics: `Ctrl-b d` detaches (servers keep running), `./fleetcom-logs.sh`
 reattaches, `./fleetcom-logs.sh --kill` closes the panes; mouse scrolling is
