@@ -63,6 +63,23 @@ crashes on boot, Claude can read the panes and walk you through the fix.
 Requires the `claude` CLI and tmux (`brew install tmux`). Prefer to just boot
 the stack without Claude? Use `./fleetcom start` — see **Commands** below.
 
+## Prefer separate Terminal windows? (no tmux)
+
+```bash
+./fleetcom start --windows
+```
+
+Same boot, but the five log streams (optro-api, midship-api, cascade, alerts,
+doctor) open as separate Terminal windows instead of the tmux grid, for that
+run only (`./fleetcom restart --windows` works the same way). To make windows
+the saved default for every plain `./fleetcom start`, run
+`./fleetcom logs --windows` once; it persists `LOGS_VIEW` in `local.conf`, and
+`./fleetcom logs --tmux` switches back. Details in **Watching logs** below.
+The one exception is `./fleetcom claude`: it forces the tmux layout whenever
+tmux is installed (the Claude pane needs it), and only without tmux does it
+fall back to separate log windows, with Claude launched in your current
+terminal reading the log files.
+
 ## Commands
 
 Everything runs through one command — `./fleetcom <command>` — with built-in
