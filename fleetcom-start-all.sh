@@ -178,23 +178,60 @@ rm -f "$SB_LOG"
 (cd "$DEVENV" && direnv exec . docker compose "${UP_FILES[@]}" up -d "${UP_SERVICES[@]}") \
 	|| say "WARNING: conductor/extract startup failed (see above) — continuing with the rest of the boot"
 
-# machine-learning is cloned by start-background itself, so on a machine
-# onboarded before its first boot the ML port override doesn't exist yet —
-# without it ML grabs 8000 and collides with the Midship API
-if [ -d "$ML_DIR" ] && ! grep -q '"8004:8000"' "$ML_DIR/docker-compose.override.yml" 2>/dev/null; then
-	say "applying ML port override (host 8004) — machine-learning was cloned after onboarding"
-	if grep -q "ab_mlservice_local:" "$ML_DIR/docker-compose.override.yml" 2>/dev/null; then
-		awk '1; /^  ab_mlservice_local:$/ {
-			print "    # FLEETCOM: host port moves off 8000 (held by Midship FastAPI)."
-			print "    ports: !override"
-			print "      - \"8004:8000\""
-		}' "$ML_DIR/docker-compose.override.yml" > "$ML_DIR/docker-compose.override.yml.tmp" \
-			&& mv "$ML_DIR/docker-compose.override.yml.tmp" "$ML_DIR/docker-compose.override.yml"
-	else
-		printf 'services:\n  ab_mlservice_local:\n    # FLEETCOM: host port moves off 8000.\n    ports: !override\n      - "8004:8000"\n' \
-			> "$ML_DIR/docker-compose.override.yml"
+# machine-learning's docker-compose.override.yml carries a FLEETCOM-only port
+# remap (host 8004 -> container 8000) so ML doesn't collide with Midship's
+# FastAPI on 8000. That override is git-TRACKED in the shared repo and the remap
+# is an uncommitted local edit, so a git checkout/restore/pull/re-clone silently
+# reverts it to pristine — and the next `docker compose up` (start-background ->
+# ml-start) then binds 8000 again. That's the recurring "port isn't remapped".
+# So every boot, unconditionally: (1) (re)apply the remap if the file reverted,
+# (2) git skip-worktree so git stops reverting it, (3) verify the RUNNING
+# container is actually on 8004 and force-recreate if not — loudly, no swallow.
+if [ -d "$ML_DIR" ]; then
+	OVR="$ML_DIR/docker-compose.override.yml"
+	# (1) ensure the remap is present (idempotent; only touches the file if the
+	#     override reverted to its pristine, no-remap committed state)
+	if ! grep -q '"8004:8000"' "$OVR" 2>/dev/null; then
+		say "ML port override missing (file reverted to pristine) — re-applying host 8004 remap"
+		if grep -q "ab_mlservice_local:" "$OVR" 2>/dev/null; then
+			awk '1; /^  ab_mlservice_local:$/ {
+				print "    # FLEETCOM: host port moves off 8000 (held by Midship FastAPI)."
+				print "    ports: !override"
+				print "      - \"8004:8000\""
+			}' "$OVR" > "$OVR.tmp" && mv "$OVR.tmp" "$OVR"
+		else
+			printf 'services:\n  ab_mlservice_local:\n    # FLEETCOM: host port moves off 8000.\n    ports: !override\n      - "8004:8000"\n' \
+				> "$OVR"
+		fi
 	fi
-	(cd "$ML_DIR" && docker compose up -d ab_mlservice_local) || say "WARNING: could not recreate ab_mlservice_local with the new port"
+	# (2) pin the local edit so git stops reverting it (the actual root cause of
+	#     the recurring collision). Harmless if already pinned or file untracked;
+	#     a fresh clone drops the flag, which is why (1)+(3) still run every boot.
+	(cd "$ML_DIR" && git update-index --skip-worktree docker-compose.override.yml 2>/dev/null) || true
+	# (3) make the RUNNING container match the remap. No-op in the common good
+	#     case (already on 8004); otherwise force-recreate and surface failures
+	#     instead of swallowing them.
+	ml_hostport() { docker inspect ab_mlservice_local --format '{{range $p, $c := .HostConfig.PortBindings}}{{range $c}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null; }
+	if [ "$(ml_hostport)" != "8004" ]; then
+		say "ab_mlservice_local not on 8004 (currently: $(ml_hostport | grep . || echo 'not running')) — recreating on 8004"
+		# Source ML's .envrc first (as bin/ml-start does) so the recreated
+		# container gets its real MLFLOW/AWS/CONDUCTOR runtime env, not blanks.
+		# .envrc references unset vars, so relax -eu while sourcing, then restore
+		# -e so a genuine docker failure still propagates to the `if`.
+		if (
+			cd "$ML_DIR"
+			set +eu
+			[ -f .envrc ] && . ./.envrc >/dev/null 2>&1
+			set -e
+			docker compose up -d --force-recreate ab_mlservice_local
+		); then
+			[ "$(ml_hostport)" = "8004" ] \
+				&& say "ab_mlservice_local now on 8004" \
+				|| say "WARNING: ab_mlservice_local still not on 8004 (got: $(ml_hostport | grep . || echo none)) — check 'docker logs ab_mlservice_local' and that host 8004 is free"
+		else
+			say "WARNING: could not recreate ab_mlservice_local on 8004 — run 'cd $ML_DIR && docker compose up -d --force-recreate ab_mlservice_local' to see the error"
+		fi
+	fi
 fi
 
 if up 9001; then
