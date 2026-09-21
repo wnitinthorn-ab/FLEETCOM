@@ -100,6 +100,31 @@ check_midship_workspace_id() { # envrc file, label
 	fi
 }
 
+# check_launchdarkly: Midship runs LaunchDarkly OFFLINE by default in
+# LOCAL/LOCAL_VPN/LOCAL_DB — every flag check silently returns its default
+# rather than erroring, which is not sign-in-blocking on its own but produces
+# confusing, unrelated-looking 403/404s during exactly the kind of debugging
+# this AWS-profile work came out of. app_container.py logs exactly one of
+# launchdarkly.initialized / launchdarkly.offline_mode /
+# launchdarkly.not_initialized_serving_defaults at startup — this reads the
+# LAST one FLEETCOM's own midship-api.log saw, not a live query, so "offline"
+# and "log doesn't exist yet" have to be told apart explicitly rather than
+# both reading as one silent blank.
+check_launchdarkly() { # log file, label
+	local file=$1 label=$2 line
+	line="$(grep -oE 'launchdarkly\.(initialized|offline_mode|not_initialized_serving_defaults)' "$file" 2>/dev/null | tail -1)"
+	case "$line" in
+		launchdarkly.initialized)
+			printf "%s✓ %-5s %-40s online%s\n" "$GREEN" "" "$label" "$NC" ;;
+		launchdarkly.offline_mode)
+			printf "%s? %-5s %-40s offline (expected for LOCAL_DB unless LAUNCHDARKLY_LOCAL_ONLINE=1)%s\n" "$YELLOW" "" "$label" "$NC" ;;
+		launchdarkly.not_initialized_serving_defaults)
+			printf "%s! %-5s %-40s SDK key fetch/init failed — serving flag defaults%s\n" "$YELLOW" "" "$label" "$NC" ;;
+		*)
+			printf "%s? %-5s %-40s unknown (no line seen yet in %s)%s\n" "$YELLOW" "" "$label" "$file" "$NC" ;;
+	esac
+}
+
 # Printed first, because every port and health line below describes whatever
 # was booted from these paths. A worktree override that is stale, or one a
 # previous task left recorded, is otherwise invisible in a green report.
@@ -118,6 +143,7 @@ check_port 7077 docke  "Hatchet gRPC (docker)"
 check_process "midship.heretic.hatchet.worker" "Hatchet workers (document/procedure/screenshot)"
 check_aws_profile "${MIDSHIP_AWS_PROFILE:-}" "$MIDSHIP_AWS_ACCOUNT_ID" "AWS profile (KMS/Secrets Manager)"
 check_midship_workspace_id "$AB_BACKEND_DIR/.envrc" "Optro sign-in workspace id"
+check_launchdarkly "$_doctor_here/logs/midship-api.log" "LaunchDarkly (flags)"
 
 echo "== AuditBoard =="
 check_port 5433  postgres "native Postgres (moved)"
@@ -147,5 +173,9 @@ check_http http://localhost:9001/api/v1/health 200 "AB API v1"
 check_http https://localhost:9002/login        200 "AB Caddy/login"
 check_http http://localhost:8010/api/          401 "Cascade API (401 = auth wall, healthy)"
 check_http http://localhost:8088/              200 "Cascade client"
+# 302 -> /ui/, not 200: launchdevly redirects its bare root. It's one of the
+# services a broken sibling image can silently take down in the batched
+# start-background compose call — see fleetcom-start-all.sh.
+check_http http://localhost:8765/              302 "AB launchdevly (flag proxy, moved -> /ui/)"
 
 exit $FAIL
