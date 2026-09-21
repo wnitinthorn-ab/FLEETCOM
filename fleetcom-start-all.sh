@@ -103,6 +103,14 @@ if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 		elif ! (cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && poetry run python -c '' >/dev/null 2>&1); then
 			say "WARNING: midship-turbo-broccoli's poetry env isn't set up — SKIPPING the Midship API (run 'poetry install' there, then re-run)"
 		else
+			# A crashed --reload boot can leave uvicorn's StatReload parent bound
+			# to the port after its child app process died, so `up 8000` (lsof
+			# -sTCP:LISTEN) reports nothing bound yet the fresh launch below still
+			# fails with "[Errno 48] Address already in use" — hit manually, fixed
+			# by killing the stale parent by name. Cleared unconditionally here,
+			# before every fresh launch, since it's a no-op when nothing stale is
+			# running (no matching process, pkill exits non-zero, `|| true` absorbs it).
+			pkill -f "poetry run uvicorn midship.app.main:app" 2>/dev/null && sleep 1 || true
 			say "midship API -> logs/midship-api.log"
 			# --timeout-graceful-shutdown: uvicorn --reload hangs forever "waiting for
 			# background tasks" when a file change triggers a reload; cap the wait so
