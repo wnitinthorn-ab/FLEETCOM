@@ -247,11 +247,25 @@ fleetcom_checkout_branch() {
 	printf '%s\n' "$branch"
 }
 
-# fleetcom_print_checkouts: one line per repo — name, kind, branch, path.
-# Read-only. Called by doctor and by `fleetcom worktree status`, so the two
-# cannot disagree about what is about to be booted.
+# fleetcom_checkout_age_days DIR: whole days since DIR's checked-out HEAD
+# commit, or empty when DIR is not a checkout at all. Reads only the local
+# commit's own timestamp (`git log -1 --format=%ct`) — never fetches — so a
+# staleness notice costs nothing extra and never depends on network being up,
+# unlike comparing against a remote-tracking branch's tip would.
+fleetcom_checkout_age_days() {
+	local dir="$1" ct
+	[ -d "$dir" ] || return 0
+	ct="$(git -C "$dir" log -1 --format=%ct 2>/dev/null)" || return 0
+	[ -n "$ct" ] || return 0
+	printf '%s\n' $(( ( $(date +%s) - ct ) / 86400 ))
+}
+
+# fleetcom_print_checkouts: one line per repo — name, kind, branch, path, and
+# (past 7 days) how stale HEAD is. Read-only. Called by doctor and by
+# `fleetcom worktree status`, so the two cannot disagree about what is about
+# to be booted.
 fleetcom_print_checkouts() {
-	local var dir kind branch repo marker
+	local var dir kind branch repo marker age stale
 	for var in $FLEETCOM_REPO_VARS; do
 		eval "dir=\$$var"
 		repo="$(fleetcom_repo_for_var "$var")"
@@ -263,7 +277,23 @@ fleetcom_print_checkouts() {
 			not-a-repo) marker="NOT A GIT CHECKOUT" ;;
 			*)          marker="main" ;;
 		esac
-		printf '  %-24s %-20s %-22s %s\n' "$repo" "$marker" "${branch:--}" "$dir"
+		# Notification only, never a gate: a boot proceeds on a stale checkout
+		# same as before, this just says so. Skipped for missing/not-a-repo,
+		# which have no HEAD to date in the first place.
+		stale=""
+		case "$kind" in
+			worktree|main)
+				age="$(fleetcom_checkout_age_days "$dir")"
+				if [ -n "$age" ] && [ "$age" -gt 7 ]; then
+					case "$repo" in
+						midship-*)    stale="  (HEAD is ${age}d old — ./fleetcom update midship)" ;;
+						cascade)      stale="  (HEAD is ${age}d old — ./fleetcom update cascade)" ;;
+						auditboard-*) stale="  (HEAD is ${age}d old — ./fleetcom update auditboard)" ;;
+					esac
+				fi
+				;;
+		esac
+		printf '  %-24s %-20s %-22s %s%s\n' "$repo" "$marker" "${branch:--}" "$dir" "$stale"
 	done
 }
 
