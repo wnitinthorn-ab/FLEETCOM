@@ -34,6 +34,27 @@ done
 # `fleetcom start|restart <stack>` boot one stack without touching the others.
 want() { [ "$TARGET" = all ] || [ "$TARGET" = "$1" ]; }
 
+# Refuse the boot when a repo this run needs resolves to nothing — the shape a
+# stale worktree override leaves behind. Checked here rather than left to the
+# first cd, because a missing path otherwise surfaces minutes in, as an install
+# or build error that names anything but the real cause.
+#
+# **After the arg loop, and scoped to the target.** Checking every repo up front
+# would make `fleetcom start midship` refuse over an unrelated checkout it never
+# touches, turning a guard into a new way for a partial start to fail.
+# `if`, not `want x && ...`: under `set -e` a failing `&&` chain at the top
+# level ends the script, so a per-stack start would exit silently on the first
+# stack it is not booting.
+_checkout_vars=""
+if want midship;    then _checkout_vars="$_checkout_vars MIDSHIP_TURBO_BROCCOLI_DIR MIDSHIP_FRONTEND_DIR"; fi
+if want auditboard; then _checkout_vars="$_checkout_vars AB_BACKEND_DIR AB_FRONTEND_DIR AB_DEVENV_DIR"; fi
+if want cascade;    then _checkout_vars="$_checkout_vars CASCADE_DIR"; fi
+# Passed as arguments rather than by prefixing an assignment to the call: bash
+# keeps a `VAR=x func` assignment after the function returns, so that form would
+# quietly narrow every later use of the list too.
+# shellcheck disable=SC2086 # deliberate word splitting: a list of variable names
+fleetcom_check_checkouts $_checkout_vars || exit 1
+
 # nearly everything below needs the docker daemon; launch it if it's down
 if ! docker info >/dev/null 2>&1; then
 	say "docker daemon not reachable — launching Docker Desktop"
@@ -46,6 +67,17 @@ fi
 
 # --- Midship (fixed ports; owns 5432/6379/8080/9980/8000/5173) --------------
 if want midship; then
+# Midship's FastAPI process needs real AWS credentials for KMS (Optro OAuth
+# token encryption on every sign-in callback) and S3 blob access, via DI
+# resources in app_container.py that name no profile — see paths.sh's "Midship
+# AWS profile" section for the full story and why this is resolved by AWS
+# account ID rather than a hardcoded profile name. Reported here, once, before
+# either process launch below actually uses it.
+if [ -n "$MIDSHIP_AWS_PROFILE" ]; then
+	say "midship: AWS profile '$MIDSHIP_AWS_PROFILE' resolved for account $MIDSHIP_AWS_ACCOUNT_ID (KMS + Secrets Manager) — exporting to the API and worker processes"
+else
+	say "WARNING: no AWS profile resolved for Midship's account ($MIDSHIP_AWS_ACCOUNT_ID) — KMS calls (e.g. Optro token encryption) will fail with NoCredentialsError unless the ambient/default AWS credentials already resolve to that account. Log into a profile for it (aws sso login --profile <name>) or set MIDSHIP_AWS_PROFILE explicitly, then re-run."
+fi
 if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 	say "midship: docker services"
 	(cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && docker compose up -d)
@@ -71,11 +103,24 @@ if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 		elif ! (cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && poetry run python -c '' >/dev/null 2>&1); then
 			say "WARNING: midship-turbo-broccoli's poetry env isn't set up — SKIPPING the Midship API (run 'poetry install' there, then re-run)"
 		else
+			# A crashed --reload boot can leave uvicorn's StatReload parent bound
+			# to the port after its child app process died, so `up 8000` (lsof
+			# -sTCP:LISTEN) reports nothing bound yet the fresh launch below still
+			# fails with "[Errno 48] Address already in use" — hit manually, fixed
+			# by killing the stale parent by name. Cleared unconditionally here,
+			# before every fresh launch, since it's a no-op when nothing stale is
+			# running (no matching process, pkill exits non-zero, `|| true` absorbs it).
+			pkill -f "poetry run uvicorn midship.app.main:app" 2>/dev/null && sleep 1 || true
 			say "midship API -> logs/midship-api.log"
 			# --timeout-graceful-shutdown: uvicorn --reload hangs forever "waiting for
 			# background tasks" when a file change triggers a reload; cap the wait so
 			# reloads recover instead of wedging the API (port bound, nothing answering)
-			(cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && ENV=local_db nohup poetry run uvicorn midship.app.main:app --reload --timeout-graceful-shutdown 15 > "$LOGS/midship-api.log" 2>&1 &)
+			# AWS_PROFILE goes through `env`'s own argv, not a bare assignment
+			# prefix: bash recognizes `NAME=value` assignment prefixes at parse
+			# time, before expansion, so a `${VAR:+NAME=value}` word here would
+			# not be treated as an assignment — its expansion would become the
+			# command name instead, and the launch would silently fail.
+			(cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && ENV=local_db nohup env ${MIDSHIP_AWS_PROFILE:+AWS_PROFILE="$MIDSHIP_AWS_PROFILE"} poetry run uvicorn midship.app.main:app --reload --timeout-graceful-shutdown 15 > "$LOGS/midship-api.log" 2>&1 &)
 		fi
 	fi
 	# Hatchet workers (document/procedure/screenshot) are separate consumer
@@ -95,7 +140,8 @@ if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 		# (e.g. all three fail on a stale Hatchet token). With its own group the
 		# kill 0 stays contained to the workers. fleetcom-stop-all.sh tears them
 		# down (matched by the same 'run-workers?.sh' / worker pattern).
-		( cd "$MIDSHIP_TURBO_BROCCOLI_DIR" || exit 0; set -m; ENV=local_db nohup bash scripts/run-workers.sh > "$LOGS/midship-workers.log" 2>&1 & )
+		# Same AWS_PROFILE-via-`env` reasoning as the API launch above.
+		( cd "$MIDSHIP_TURBO_BROCCOLI_DIR" || exit 0; set -m; ENV=local_db nohup env ${MIDSHIP_AWS_PROFILE:+AWS_PROFILE="$MIDSHIP_AWS_PROFILE"} bash scripts/run-workers.sh > "$LOGS/midship-workers.log" 2>&1 & )
 	fi
 	if up 5173; then say "midship frontend already on 5173"; else
 		if [ ! -d "$MIDSHIP_FRONTEND_DIR/node_modules" ]; then
@@ -157,23 +203,74 @@ rm -f "$SB_LOG"
 (cd "$DEVENV" && direnv exec . docker compose "${UP_FILES[@]}" up -d "${UP_SERVICES[@]}") \
 	|| say "WARNING: conductor/extract startup failed (see above) — continuing with the rest of the boot"
 
-# machine-learning is cloned by start-background itself, so on a machine
-# onboarded before its first boot the ML port override doesn't exist yet —
-# without it ML grabs 8000 and collides with the Midship API
-if [ -d "$ML_DIR" ] && ! grep -q '"8004:8000"' "$ML_DIR/docker-compose.override.yml" 2>/dev/null; then
-	say "applying ML port override (host 8004) — machine-learning was cloned after onboarding"
-	if grep -q "ab_mlservice_local:" "$ML_DIR/docker-compose.override.yml" 2>/dev/null; then
-		awk '1; /^  ab_mlservice_local:$/ {
-			print "    # FLEETCOM: host port moves off 8000 (held by Midship FastAPI)."
-			print "    ports: !override"
-			print "      - \"8004:8000\""
-		}' "$ML_DIR/docker-compose.override.yml" > "$ML_DIR/docker-compose.override.yml.tmp" \
-			&& mv "$ML_DIR/docker-compose.override.yml.tmp" "$ML_DIR/docker-compose.override.yml"
-	else
-		printf 'services:\n  ab_mlservice_local:\n    # FLEETCOM: host port moves off 8000.\n    ports: !override\n      - "8004:8000"\n' \
-			> "$ML_DIR/docker-compose.override.yml"
+# launchdevly (AB's local feature-flag proxy) is one of the ~20 services in the
+# batched "abc run start-background" call above, which is a single atomic
+# `docker compose up -d` — a broken sibling image (oso-facts-transformer,
+# missing build context) aborts that whole batch with exit 1 and takes
+# launchdevly down with it even though launchdevly itself built and runs fine.
+# Worse, fleetcom-stop-all.sh's stop step tears down the same compose project,
+# so every restart re-breaks it even after someone manually recovered it — the
+# broken sibling is still in the next batch. So recover it with its own
+# targeted `up -d`, unconditionally, regardless of whether the batch above
+# exited 0 or not; a no-op when it's already up.
+say "AB launchdevly (flag proxy): targeted recovery in case a sibling image broke the batched start"
+(cd "$DEVENV" && direnv exec . docker compose -f docker-compose-supplement-dev.yml up -d launchdevly) \
+	|| say "WARNING: launchdevly recovery failed — check 'docker logs auditboard-dev-env-launchdevly-1'"
+
+# machine-learning's docker-compose.override.yml carries a FLEETCOM-only port
+# remap (host 8004 -> container 8000) so ML doesn't collide with Midship's
+# FastAPI on 8000. That override is git-TRACKED in the shared repo and the remap
+# is an uncommitted local edit, so a git checkout/restore/pull/re-clone silently
+# reverts it to pristine — and the next `docker compose up` (start-background ->
+# ml-start) then binds 8000 again. That's the recurring "port isn't remapped".
+# So every boot, unconditionally: (1) (re)apply the remap if the file reverted,
+# (2) git skip-worktree so git stops reverting it, (3) verify the RUNNING
+# container is actually on 8004 and force-recreate if not — loudly, no swallow.
+if [ -d "$ML_DIR" ]; then
+	OVR="$ML_DIR/docker-compose.override.yml"
+	# (1) ensure the remap is present (idempotent; only touches the file if the
+	#     override reverted to its pristine, no-remap committed state)
+	if ! grep -q '"8004:8000"' "$OVR" 2>/dev/null; then
+		say "ML port override missing (file reverted to pristine) — re-applying host 8004 remap"
+		if grep -q "ab_mlservice_local:" "$OVR" 2>/dev/null; then
+			awk '1; /^  ab_mlservice_local:$/ {
+				print "    # FLEETCOM: host port moves off 8000 (held by Midship FastAPI)."
+				print "    ports: !override"
+				print "      - \"8004:8000\""
+			}' "$OVR" > "$OVR.tmp" && mv "$OVR.tmp" "$OVR"
+		else
+			printf 'services:\n  ab_mlservice_local:\n    # FLEETCOM: host port moves off 8000.\n    ports: !override\n      - "8004:8000"\n' \
+				> "$OVR"
+		fi
 	fi
-	(cd "$ML_DIR" && docker compose up -d ab_mlservice_local) || say "WARNING: could not recreate ab_mlservice_local with the new port"
+	# (2) pin the local edit so git stops reverting it (the actual root cause of
+	#     the recurring collision). Harmless if already pinned or file untracked;
+	#     a fresh clone drops the flag, which is why (1)+(3) still run every boot.
+	(cd "$ML_DIR" && git update-index --skip-worktree docker-compose.override.yml 2>/dev/null) || true
+	# (3) make the RUNNING container match the remap. No-op in the common good
+	#     case (already on 8004); otherwise force-recreate and surface failures
+	#     instead of swallowing them.
+	ml_hostport() { docker inspect ab_mlservice_local --format '{{range $p, $c := .HostConfig.PortBindings}}{{range $c}}{{.HostPort}}{{end}}{{end}}' 2>/dev/null; }
+	if [ "$(ml_hostport)" != "8004" ]; then
+		say "ab_mlservice_local not on 8004 (currently: $(ml_hostport | grep . || echo 'not running')) — recreating on 8004"
+		# Source ML's .envrc first (as bin/ml-start does) so the recreated
+		# container gets its real MLFLOW/AWS/CONDUCTOR runtime env, not blanks.
+		# .envrc references unset vars, so relax -eu while sourcing, then restore
+		# -e so a genuine docker failure still propagates to the `if`.
+		if (
+			cd "$ML_DIR"
+			set +eu
+			[ -f .envrc ] && . ./.envrc >/dev/null 2>&1
+			set -e
+			docker compose up -d --force-recreate ab_mlservice_local
+		); then
+			[ "$(ml_hostport)" = "8004" ] \
+				&& say "ab_mlservice_local now on 8004" \
+				|| say "WARNING: ab_mlservice_local still not on 8004 (got: $(ml_hostport | grep . || echo none)) — check 'docker logs ab_mlservice_local' and that host 8004 is free"
+		else
+			say "WARNING: could not recreate ab_mlservice_local on 8004 — run 'cd $ML_DIR && docker compose up -d --force-recreate ab_mlservice_local' to see the error"
+		fi
+	fi
 fi
 
 if up 9001; then
@@ -186,10 +283,15 @@ else
 	if command -v tmux >/dev/null; then
 		say "AB API -> tmux session fleetcom-ab-api + logs/ab-api.log (migrations + api/worker/cron; takes a few minutes)"
 		tmux kill-session -t fleetcom-ab-api 2>/dev/null || true
-		tmux new-session -d -s fleetcom-ab-api "cd '$AB_BACKEND_DIR' && direnv exec . bin/start-api 2>&1 | tee '$LOGS/ab-api.log'"
+		# Under the backend's own pinned node — see fleetcom_node_prefix. The
+		# prefix is empty when nothing needs doing, so the command is unchanged
+		# on a correctly-versioned shell.
+		# Inside `direnv exec`, never before it — direnv rebuilds PATH.
+		AB_API_NODE="$(fleetcom_node_path_cmd "$AB_BACKEND_DIR")"
+		tmux new-session -d -s fleetcom-ab-api "cd '$AB_BACKEND_DIR' && direnv exec . bash -c '${AB_API_NODE}exec bin/start-api' 2>&1 | tee '$LOGS/ab-api.log'"
 	else
 		say "WARNING: tmux missing — nohup fallback; edits to backend packages will NOT hot-swap api:v2 (see README). brew install tmux to fix"
-		(cd "$AB_BACKEND_DIR" && nohup direnv exec . bin/start-api > "$LOGS/ab-api.log" 2>&1 &)
+		(cd "$AB_BACKEND_DIR" && nohup direnv exec . bash -c "$(fleetcom_node_path_cmd "$AB_BACKEND_DIR")exec bin/start-api" > "$LOGS/ab-api.log" 2>&1 &)
 	fi
 fi
 
@@ -202,7 +304,9 @@ if up 9006; then say "AB client already on 9006"; else
 		say "WARNING: auditboard-frontend has no node_modules — SKIPPING the AB client (run 'pnpm install' there, then re-run)"
 	else
 		say "AB client -> logs/ab-client.log (ope dev from monorepo root; --reuse-last avoids the TTY prompt)"
-		(cd "$AB_FRONTEND_DIR" && nohup direnv exec "$DEVENV" pnpm start --reuse-last > "$LOGS/ab-client.log" 2>&1 &)
+		# The frontend pins a DIFFERENT node from the backend (24.12.0 vs
+		# 24.19.0), so this resolves its own rather than inheriting one.
+		(cd "$AB_FRONTEND_DIR" && nohup direnv exec "$DEVENV" bash -c "$(fleetcom_node_path_cmd "$AB_FRONTEND_DIR")exec pnpm start --reuse-last" > "$LOGS/ab-client.log" 2>&1 &)
 	fi
 fi
 fi  # want auditboard

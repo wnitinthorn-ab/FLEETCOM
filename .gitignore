@@ -6,11 +6,28 @@ logs/
 # Per-machine repo locations written by fleetcom-onboard.sh's prompts.
 local.conf
 
+# Per-machine worktree overrides written by "fleetcom worktree use". Kept apart
+# from local.conf so that an "onboard --reconfigure" rewrite cannot discard the
+# worktree a developer is mid-task on, and so dropping every override is
+# deleting one file.
+worktrees.conf
+
 # Belt-and-braces: no env files in this repo, ever. Secrets live in the
 # per-machine files fleetcom-onboard.sh writes to (auditboard-dev-env/.envrc,
 # cascade/.env), both gitignored in their own repos.
 .env
 .env.*
+
+# Locally-generated CA bundles (e.g. the certifi+mkcert root concatenation
+# fleetcom-verify-optro.sh builds for its live probe) — machine-specific,
+# never something to commit even if someone persists one to disk instead of
+# mktemp's usual throwaway path.
+*.pem
+
+# Ad-hoc backup files (editor/manual "-presso"-style snapshots before a risky
+# edit) — scratch, not source; the real history lives in git.
+*.bak
+*.bak-*
 
 # macOS Finder artifacts
 .DS_Store

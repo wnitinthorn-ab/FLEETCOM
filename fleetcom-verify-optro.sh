@@ -10,11 +10,20 @@
 #
 # See docs/optro-signin-local-e2e.md for the gotchas each check maps to.
 set -uo pipefail
-HERE="$(cd "$(dirname "$0")" && pwd)"
-# shellcheck disable=SC1091
-source "$HERE/paths.sh" 2>/dev/null || true
-AB="${AB_BACKEND_DIR:-$HOME/Development/auditboard-backend}"
-MID="${MIDSHIP_TURBO_BROCCOLI_DIR:-$HOME/Development/midship-turbo-broccoli}"
+# Standalone: does not source or read FLEETCOM's paths.sh/local.conf, and
+# ignores AB_BACKEND_DIR/MIDSHIP_TURBO_BROCCOLI_DIR even if set in the
+# environment — always assumes the sibling-repo layout under ~/Development.
+#
+# Documented gap: because this script never sources paths.sh, it does not
+# know about MIDSHIP_AWS_PROFILE (paths.sh's account-ID-based AWS profile
+# resolution for Midship's KMS/Secrets Manager calls) and cannot report
+# whether that profile's SSO session is valid. `./fleetcom doctor` covers
+# that check. If this script's "invalid_client"/"invalid_grant" probe below
+# is inconclusive for reasons that smell like credentials rather than OAuth
+# config, run `./fleetcom doctor` too rather than assuming this script would
+# have caught it.
+AB="$HOME/Development/auditboard-backend"
+MID="$HOME/Development/midship-turbo-broccoli"
 # The instance URL the Midship FE produces locally (buildOptroBaseUrl default = caddy https entrypoint).
 OPTRO_LOCAL_BASE="${OPTRO_LOCAL_BASE:-http://localhost:9001}"
 
@@ -49,7 +58,13 @@ grep -qE "client_assertion|private_key_jwt" "$AB/contexts/auth/src/lib/midship-o
 	|| no "AB missing private_key_jwt verifier" "AB branch too old (needs SOX-101255 #37314); pull + rebuild"
 
 echo "== AuditBoard resolved config =="
-AB_JSON=$(cd "$AB" && direnv exec . node --input-type=module -e \
+# Resolved from contexts/api, not the repo root: @soxhub/config is a workspace
+# package and the ROOT package.json does not depend on it, so a root-cwd import
+# dies with ERR_MODULE_NOT_FOUND. NODE_CONFIG_DIR is then required because the
+# `config` package looks for ./config relative to cwd, and the config dir lives
+# at the repo root. Without both, every check below reads an empty config and
+# reports a false negative (missing clientId/cert/redirectUris).
+AB_JSON=$(cd "$AB/contexts/api" && NODE_CONFIG_DIR="$AB/config" direnv exec . node --input-type=module -e \
 	"import {getConfigValue as g} from '@soxhub/config'; console.log(JSON.stringify({cid:g('v1.midship.clientId'),cert:(g('v1.midship.certificate')||''),uris:(g('v1.midship.redirectUris')||[]),url:g('v1.soxhub.url')}))" \
 	2>/dev/null | tail -1)
 if [ -z "$AB_JSON" ]; then
@@ -114,11 +129,16 @@ else:
     except Exception as e:
         no(f"could not derive public key: {e}", "check OPTRO_CLIENT_PRIVATE_KEY is base64-encoded PEM")
 
+# Midship renamed Config.OPTRO_REDIRECT_URI to MIDSHIP_REDIRECT_URI (config.py:221).
+# Read the new name and fall back to the old one, so this script works against a
+# checkout from either side of that rename instead of raising AttributeError.
+_redirect_uri = getattr(config, "MIDSHIP_REDIRECT_URI", "") or getattr(config, "OPTRO_REDIRECT_URI", "")
+
 # redirect_uri allowlisted
-if config.OPTRO_REDIRECT_URI in (ab.get("uris") or []):
+if _redirect_uri in (ab.get("uris") or []):
     ok("redirect_uri allowlisted on AB")
 else:
-    no(f"redirect_uri {config.OPTRO_REDIRECT_URI} not in AB MIDSHIP_OAUTH_REDIRECT_URIS {ab.get('uris')}",
+    no(f"redirect_uri {_redirect_uri} not in AB MIDSHIP_OAUTH_REDIRECT_URIS {ab.get('uris')}",
        "add Midship's OPTRO_REDIRECT_URI to AB MIDSHIP_OAUTH_REDIRECT_URIS (JSON array)")
 
 # LIVE probe: build assertion via Midship's real code, POST to AB, inspect the error kind
@@ -128,7 +148,7 @@ async def probe():
         no("no client_assertion produced", "set OPTRO_CLIENT_PRIVATE_KEY")
         return
     body = {"grant_type": "authorization_code", "code": "verify-dummy", "code_verifier": "a"*43,
-            "client_id": config.OPTRO_CLIENT_ID, "redirect_uri": config.OPTRO_REDIRECT_URI, **params}
+            "client_id": config.OPTRO_CLIENT_ID, "redirect_uri": _redirect_uri, **params}
     try:
         async with aiohttp.ClientSession() as ss:
             async with ss.post(f"{base}{_TOKEN_PATH}", data=body, allow_redirects=False) as r:
