@@ -207,10 +207,15 @@ else
 	if command -v tmux >/dev/null; then
 		say "AB API -> tmux session fleetcom-ab-api + logs/ab-api.log (migrations + api/worker/cron; takes a few minutes)"
 		tmux kill-session -t fleetcom-ab-api 2>/dev/null || true
-		tmux new-session -d -s fleetcom-ab-api "cd '$AB_BACKEND_DIR' && direnv exec . bin/start-api 2>&1 | tee '$LOGS/ab-api.log'"
+		# Under the backend's own pinned node — see fleetcom_node_prefix. The
+		# prefix is empty when nothing needs doing, so the command is unchanged
+		# on a correctly-versioned shell.
+		# Inside `direnv exec`, never before it — direnv rebuilds PATH.
+		AB_API_NODE="$(fleetcom_node_path_cmd "$AB_BACKEND_DIR")"
+		tmux new-session -d -s fleetcom-ab-api "cd '$AB_BACKEND_DIR' && direnv exec . bash -c '${AB_API_NODE}exec bin/start-api' 2>&1 | tee '$LOGS/ab-api.log'"
 	else
 		say "WARNING: tmux missing — nohup fallback; edits to backend packages will NOT hot-swap api:v2 (see README). brew install tmux to fix"
-		(cd "$AB_BACKEND_DIR" && nohup direnv exec . bin/start-api > "$LOGS/ab-api.log" 2>&1 &)
+		(cd "$AB_BACKEND_DIR" && nohup direnv exec . bash -c "$(fleetcom_node_path_cmd "$AB_BACKEND_DIR")exec bin/start-api" > "$LOGS/ab-api.log" 2>&1 &)
 	fi
 fi
 
@@ -223,7 +228,9 @@ if up 9006; then say "AB client already on 9006"; else
 		say "WARNING: auditboard-frontend has no node_modules — SKIPPING the AB client (run 'pnpm install' there, then re-run)"
 	else
 		say "AB client -> logs/ab-client.log (ope dev from monorepo root; --reuse-last avoids the TTY prompt)"
-		(cd "$AB_FRONTEND_DIR" && nohup direnv exec "$DEVENV" pnpm start --reuse-last > "$LOGS/ab-client.log" 2>&1 &)
+		# The frontend pins a DIFFERENT node from the backend (24.12.0 vs
+		# 24.19.0), so this resolves its own rather than inheriting one.
+		(cd "$AB_FRONTEND_DIR" && nohup direnv exec "$DEVENV" bash -c "$(fleetcom_node_path_cmd "$AB_FRONTEND_DIR")exec pnpm start --reuse-last" > "$LOGS/ab-client.log" 2>&1 &)
 	fi
 fi
 fi  # want auditboard

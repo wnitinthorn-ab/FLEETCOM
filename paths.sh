@@ -179,6 +179,85 @@ fleetcom_check_checkouts() {
 	return 0
 }
 
+# ---- per-repo node version ---------------------------------------------------
+#
+# Each repo pins its own node, and they do not agree: auditboard-backend wants
+# 24.19.0 while auditboard-frontend wants 24.12.0. A start launched from an
+# arbitrary shell gets whatever that shell had, and the failure is reported by
+# the package manager as an engines mismatch on a line buried in a build log —
+# the AB client silently not listening on 9006, with the cause several hundred
+# lines up.
+#
+# Resolved per repo, not globally, because no single version satisfies both.
+
+# fleetcom_node_version DIR: the version DIR pins, from .nvmrc or package.json
+# engines.node, or empty when it pins none.
+fleetcom_node_version() {
+	local dir="$1" version=""
+	if [ -f "$dir/.nvmrc" ]; then
+		version="$(tr -d '[:space:]v' < "$dir/.nvmrc" 2>/dev/null)"
+	fi
+	if [ -z "$version" ] && [ -f "$dir/package.json" ] && command -v node >/dev/null 2>&1; then
+		version="$(node -e 'try{const p=require(process.argv[1]+"/package.json");const e=(p.engines&&p.engines.node)||"";process.stdout.write(e.replace(/[^0-9.]/g,""))}catch(_){}' "$dir" 2>/dev/null)"
+	fi
+	printf '%s\n' "$version"
+}
+
+# fleetcom_node_path_cmd DIR: a `PATH=… ` assignment to prefix a command with so
+# it runs under DIR's pinned toolchain, or empty when nothing needs doing.
+#
+# **Volta is the mechanism here, not nvm.** Both AuditBoard repos declare a
+# `volta` field in package.json — backend `node 24.19.0 / pnpm 10.34.5`,
+# frontend `node 24.12.0 / pnpm 11.20.0` — and volta's shims do the per-project
+# switch automatically *when they are the ones being invoked*. On this machine
+# nvm also installs a node into PATH ahead of volta's shims, so `node` resolves
+# to whatever nvm last selected and volta never gets to choose. That is why the
+# frontend failed with `Expected version: 24.12.0 / Got: v20.19.4` while both
+# versions were installed.
+#
+# So the fix is to put volta's bin FIRST, not to name a version: volta then
+# reads the repo's own pin and picks correctly, including the pinned pnpm.
+#
+# **Must be applied inside `direnv exec`, not before it.** direnv re-evaluates
+# the .envrc and rebuilds PATH, discarding anything set ahead of it — an earlier
+# version of this prefixed the outer command and was silently overridden. The
+# emitted string keeps `$PATH` unexpanded so the inner shell expands it after
+# direnv has finished.
+#
+# Falls back to an nvm version directory for a repo that pins via .nvmrc or
+# engines with no volta field. Empty when neither applies, when the toolchain
+# manager is absent, or when nothing is pinned — a start that runs on the wrong
+# node and says so beats one that does not start.
+fleetcom_node_path_cmd() {
+	local dir="$1" volta_pin volta_bin want bin
+	[ -f "$dir/package.json" ] || return 0
+
+	if command -v node >/dev/null 2>&1; then
+		volta_pin="$(node -e 'try{const p=require(process.argv[1]+"/package.json");process.stdout.write(p.volta?"1":"")}catch(_){}' "$dir" 2>/dev/null)"
+	fi
+	if [ -n "$volta_pin" ]; then
+		volta_bin="${VOLTA_HOME:-$HOME/.volta}/bin"
+		if [ -d "$volta_bin" ]; then
+			printf 'PATH=%s:$PATH ' "$(printf '%q' "$volta_bin")"
+			return 0
+		fi
+		printf '[fleetcom] %s pins its toolchain with volta, which is not installed — starting on the ambient node\n' \
+			"$(basename "$dir")" >&2
+		return 0
+	fi
+
+	want="$(fleetcom_node_version "$dir")"
+	[ -n "$want" ] || return 0
+	[ "$(node -v 2>/dev/null | tr -d 'v')" = "$want" ] && return 0
+	bin="${NVM_DIR:-$HOME/.nvm}/versions/node/v$want/bin"
+	if [ ! -x "$bin/node" ]; then
+		printf '[fleetcom] %s pins node %s, which is not installed (nvm install %s)\n' \
+			"$(basename "$dir")" "$want" "$want" >&2
+		return 0
+	fi
+	printf 'PATH=%s:$PATH ' "$(printf '%q' "$bin")"
+}
+
 # ---- shared helpers ---------------------------------------------------------
 # ensure_tmux [purpose]: make tmux available, or report that it isn't. Returns
 # 0 when tmux is on PATH — offering to `brew install tmux` first if it's missing
