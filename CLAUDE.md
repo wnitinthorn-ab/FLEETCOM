@@ -69,6 +69,7 @@ You can drive the fleet directly and, if a supervisor is running, hand it work.
 | `./fleetcom claude` | Full restart + a supervising Claude pane beside the logs |
 | `./fleetcom tell "<msg>"` | Dispatch a directive to the supervising Claude |
 | `./fleetcom worktree` | Boot a repo from a git worktree instead of its main checkout |
+| `./fleetcom update [stack]` | Pull a checkout and make it runnable again (`--migrate` opt-in) |
 
 `stack` ∈ `midship | auditboard | cascade` (omit = all three).
 
@@ -124,3 +125,30 @@ cause.
 Before non-trivial changes to this stack, read README's Troubleshooting/Known
 edge cases and use the `fleetcom-doctor` skill — most failure modes are already
 documented with a named cause and fix.
+
+## Updating a checkout
+
+`./fleetcom update [auditboard|cascade|midship|all] [--migrate] [--no-build]`
+
+Encodes the steps that fail confusingly when skipped:
+
+- **Not a fast-forward is reported, never merged.** It prints git's own error
+  rather than guessing at a cause — an early version blamed "local commits" for
+  what was actually `pull.rebase=true` refusing on a dirty `pnpm-lock.yaml`.
+- **Already-current is detected before pulling**, not by attempting a pull, so a
+  no-op update is not defeated by an unrelated dirty-tree precondition.
+- **`dist/` is wiped before the AuditBoard rebuild.** It is gitignored, so a pull
+  leaves orphaned compiled output and v1 dies at boot with `does not provide an
+  export named X` — pointing at a file that is correct.
+- **`pnpm install --config.confirm-modules-purge=false`**, because the prompt it
+  otherwise shows hangs a backgrounded run with no indication why.
+- **`pnpm -w ab build`**, never bare `ab build`.
+- **Migrations are opt-in** (`--migrate`) and run through `direnv exec` so they
+  reach the port FLEETCOM moved the database to (5433), not the default 5432
+  where Midship's postgres lives.
+- **Node version is checked and reported once**, naming both versions. AuditBoard
+  pins `24.19.0` in `.nvmrc` and root `engines`; a mismatch otherwise surfaces as
+  `WARN Unsupported engine` repeated across 64 workspaces and then a failure
+  somewhere unrelated.
+
+Stacks are not restarted — run `./fleetcom restart <stack>` afterwards.
