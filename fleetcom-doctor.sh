@@ -75,6 +75,31 @@ check_aws_profile() { # profile, account id, label
 	fi
 }
 
+# check_midship_workspace_id: a lightweight sanity check, not a DB round-trip
+# — just "is MIDSHIP_WORKSPACE_ID even set in whatever .envrc auditboard-backend
+# currently resolves to". A silently-empty or stale value here is the exact bug
+# that started the debugging session this AWS-profile work grew out of:
+# Midship's Optro callback 401s with "Could not resolve Midship workspace from
+# token", a failure that looks nothing like a credentials problem and would
+# otherwise cost another round of log-diving to tell apart from one. This does
+# NOT confirm the id names a real row in whichever Midship DB is currently
+# live — only that the var is present and non-empty — so a warning, not a
+# FAIL: the var being unset only breaks the Optro sign-in flow specifically,
+# not the rest of the fleet.
+check_midship_workspace_id() { # envrc file, label
+	local file=$1 label=$2 val=""
+	if [ -f "$file" ]; then
+		val="$(grep -E '^[[:space:]]*export[[:space:]]+MIDSHIP_WORKSPACE_ID=' "$file" 2>/dev/null | tail -1)"
+		val="${val#*MIDSHIP_WORKSPACE_ID=}"
+		val="${val%\"}"; val="${val#\"}"
+	fi
+	if [ -n "$val" ]; then
+		printf "%s✓ %-5s %-40s MIDSHIP_WORKSPACE_ID=%s (in %s)%s\n" "$GREEN" "" "$label" "$val" "$file" "$NC"
+	else
+		printf "%s! %-5s %-40s MIDSHIP_WORKSPACE_ID not set (checked %s)%s\n" "$YELLOW" "" "$label" "$file" "$NC"
+	fi
+}
+
 # Printed first, because every port and health line below describes whatever
 # was booted from these paths. A worktree override that is stale, or one a
 # previous task left recorded, is otherwise invisible in a green report.
@@ -92,6 +117,7 @@ check_port 1337 docke  "Hatchet server (docker)"
 check_port 7077 docke  "Hatchet gRPC (docker)"
 check_process "midship.heretic.hatchet.worker" "Hatchet workers (document/procedure/screenshot)"
 check_aws_profile "${MIDSHIP_AWS_PROFILE:-}" "$MIDSHIP_AWS_ACCOUNT_ID" "AWS profile (KMS/Secrets Manager)"
+check_midship_workspace_id "$AB_BACKEND_DIR/.envrc" "Optro sign-in workspace id"
 
 echo "== AuditBoard =="
 check_port 5433  postgres "native Postgres (moved)"

@@ -105,8 +105,15 @@ env_names_for_repo() {
 # already configured by hand is theirs, and silently replacing its .env with a
 # link to another checkout's is a change they did not ask for and cannot see.
 # An existing symlink is refreshed, since that is this function's own output.
+#
+# Sets FLEETCOM_LAST_LINKED_ENVRC=1 when this call actually created/refreshed
+# an .envrc symlink (as opposed to a repo whose env_names don't include one,
+# or a target that already had a REAL .envrc and was left alone) — cmd_use
+# reads that flag to decide whether the new worktree also needs `direnv
+# allow`, which only a genuinely-linked .envrc does. See the comment there.
 link_env() {
 	local src="$1" dst="$2" repo="$3" name linked=0 skipped=0
+	FLEETCOM_LAST_LINKED_ENVRC=0
 	[ -d "$src" ] || return 0
 	[ -d "$dst" ] || return 0
 	[ "$src" = "$dst" ] && return 0
@@ -122,6 +129,7 @@ link_env() {
 		ln -sfn "$src/$name" "$dst/$name"
 		printf '  linked %s -> %s\n' "$name" "$src/$name"
 		linked=$((linked + 1))
+		[ "$name" = ".envrc" ] && FLEETCOM_LAST_LINKED_ENVRC=1
 	done
 	if [ "$linked" -eq 0 ] && [ "$skipped" -eq 0 ]; then
 		printf '  no gitignored config found in %s to link\n' "$src"
@@ -251,6 +259,29 @@ EOF
 	# and therefore the one whose gitignored config is known good.
 	if [ "$skip_env" -eq 0 ]; then
 		link_env "$dir" "$target" "$repo"
+		# direnv trusts a config file by its own absolute path plus a content
+		# hash, not by what a symlink points to — so the .envrc link_env just
+		# created at this brand-new worktree PATH is untrusted even though it
+		# points at an already-approved checkout's .envrc. Left alone, every
+		# `direnv exec` against this worktree silently loads nothing from it:
+		# no error, just MIDSHIP_OAUTH_CLIENT_ID/MIDSHIP_OAUTH_REDIRECT_URIS/
+		# MIDSHIP_WORKSPACE_ID/BASE_URL (auditboard-backend) or the dev-env
+		# equivalents simply absent from the environment. This is the same
+		# gotcha CLAUDE.md documents for a hand-edited .envrc ("requires
+		# direnv allow again, or every direnv exec fails") — a fresh worktree
+		# is just a second way to trigger it, one `worktree use` used to leave
+		# unhandled.
+		if [ "$FLEETCOM_LAST_LINKED_ENVRC" -eq 1 ]; then
+			if command -v direnv >/dev/null 2>&1; then
+				if (cd "$target" && direnv allow .); then
+					printf '  direnv allow: %s now trusted\n' "$target"
+				else
+					printf '  WARNING: "direnv allow" failed in %s — run it by hand or direnv exec there will silently miss its vars\n' "$target"
+				fi
+			else
+				printf '  WARNING: direnv not installed — %s/.envrc is linked but untrusted; direnv exec there will silently miss its vars until "direnv allow" runs\n' "$target"
+			fi
+		fi
 		report_deps "$target" "$repo"
 	fi
 
