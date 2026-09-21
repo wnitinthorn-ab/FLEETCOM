@@ -18,6 +18,17 @@ worktrees.conf
 .env
 .env.*
 
+# Locally-generated CA bundles (e.g. the certifi+mkcert root concatenation
+# fleetcom-verify-optro.sh builds for its live probe) — machine-specific,
+# never something to commit even if someone persists one to disk instead of
+# mktemp's usual throwaway path.
+*.pem
+
+# Ad-hoc backup files (editor/manual "-presso"-style snapshots before a risky
+# edit) — scratch, not source; the real history lives in git.
+*.bak
+*.bak-*
+
 # macOS Finder artifacts
 .DS_Store
 
