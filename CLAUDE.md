@@ -68,8 +68,58 @@ You can drive the fleet directly and, if a supervisor is running, hand it work.
 | `./fleetcom logs` | Live log panes + error alerts |
 | `./fleetcom claude` | Full restart + a supervising Claude pane beside the logs |
 | `./fleetcom tell "<msg>"` | Dispatch a directive to the supervising Claude |
+| `./fleetcom worktree` | Boot a repo from a git worktree instead of its main checkout |
 
 `stack` ∈ `midship | auditboard | cascade` (omit = all three).
+
+## Worktrees
+
+Every repo here has many git worktrees (`git worktree list` in any of them),
+and a session working on a branch is usually editing one of those rather than
+the main checkout. FLEETCOM boots whichever path each repo resolves to, so
+booting against the wrong one produces a green `doctor` that describes code
+nobody is editing.
+
+**Check first.** `./fleetcom doctor` now opens with a `== Checkouts ==` block
+naming each repo's path, branch, and whether it is a worktree or the main
+checkout. Read it before concluding anything from the rest of the report.
+
+```
+./fleetcom worktree status              # what will boot
+./fleetcom worktree list midship-frontend   # every worktree; "*" marks the active one
+./fleetcom worktree use midship-frontend ht-all-fe   # by branch, or by path
+./fleetcom restart midship              # required for it to take effect
+./fleetcom worktree reset               # back to local.conf for every repo
+```
+
+**`use` provisions the worktree.** A fresh worktree has only tracked files, so
+the gitignored config a stack needs to boot is absent — and the resulting
+failures name anything but the missing file (midship-turbo-broccoli dies at
+import with `ValidationError: Token must be set`, because a Hatchet client is
+built at module scope in `excel_screenshot.py` and reads its token from `.env`;
+without `docker-compose.override.yml` the `wopi` service is built from source and
+the boot fails inside its Dockerfile). So `use` symlinks each repo's gitignored
+config from the checkout being left behind, and names any dependency install
+still outstanding (`poetry install` / `pnpm install`) rather than running it.
+
+Symlinks, not copies, so a rotated credential does not need updating in two
+places. A real file already present in the target is never replaced — only
+symlinks are refreshed. `--no-env` skips the whole step.
+
+**Precedence is environment → `worktrees.conf` → `local.conf` → defaults.** So
+`MIDSHIP_FRONTEND_DIR=/path ./fleetcom start` overrides both files for one run
+without recording anything. Before this existed `local.conf` assigned
+unconditionally and silently discarded exported values; `fleetcom-logs.sh` still
+carries its own hand-rolled save/restore of `LOGS_VIEW` from that era.
+
+`worktrees.conf` is gitignored and deliberately separate from `local.conf`, so
+`fleetcom onboard --reconfigure` cannot discard the worktree a task is mid-way
+through, and dropping every override is deleting one file.
+
+A boot is refused outright when a repo resolves to a missing directory or
+something that is not a git checkout — the shape a stale override leaves — since
+otherwise it surfaces minutes in as an install error naming anything but the
+cause.
 
 Before non-trivial changes to this stack, read README's Troubleshooting/Known
 edge cases and use the `fleetcom-doctor` skill — most failure modes are already

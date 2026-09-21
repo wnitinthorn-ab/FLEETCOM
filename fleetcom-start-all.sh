@@ -34,6 +34,27 @@ done
 # `fleetcom start|restart <stack>` boot one stack without touching the others.
 want() { [ "$TARGET" = all ] || [ "$TARGET" = "$1" ]; }
 
+# Refuse the boot when a repo this run needs resolves to nothing — the shape a
+# stale worktree override leaves behind. Checked here rather than left to the
+# first cd, because a missing path otherwise surfaces minutes in, as an install
+# or build error that names anything but the real cause.
+#
+# **After the arg loop, and scoped to the target.** Checking every repo up front
+# would make `fleetcom start midship` refuse over an unrelated checkout it never
+# touches, turning a guard into a new way for a partial start to fail.
+# `if`, not `want x && ...`: under `set -e` a failing `&&` chain at the top
+# level ends the script, so a per-stack start would exit silently on the first
+# stack it is not booting.
+_checkout_vars=""
+if want midship;    then _checkout_vars="$_checkout_vars MIDSHIP_TURBO_BROCCOLI_DIR MIDSHIP_FRONTEND_DIR"; fi
+if want auditboard; then _checkout_vars="$_checkout_vars AB_BACKEND_DIR AB_FRONTEND_DIR AB_DEVENV_DIR"; fi
+if want cascade;    then _checkout_vars="$_checkout_vars CASCADE_DIR"; fi
+# Passed as arguments rather than by prefixing an assignment to the call: bash
+# keeps a `VAR=x func` assignment after the function returns, so that form would
+# quietly narrow every later use of the list too.
+# shellcheck disable=SC2086 # deliberate word splitting: a list of variable names
+fleetcom_check_checkouts $_checkout_vars || exit 1
+
 # nearly everything below needs the docker daemon; launch it if it's down
 if ! docker info >/dev/null 2>&1; then
 	say "docker daemon not reachable — launching Docker Desktop"

@@ -6,6 +6,13 @@ set -uo pipefail
 GREEN=$'\033[32m'; RED=$'\033[31m'; YELLOW=$'\033[33m'; NC=$'\033[0m'
 FAIL=0
 
+# Sourced for the checkout report below. Doctor previously read no paths at all,
+# which meant a green report could describe a fleet booted from a different
+# checkout than the one being edited — the failure a worktree override makes
+# easy to hit and hard to see.
+_doctor_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$_doctor_here/paths.sh"
+
 check_port() { # port, expected pattern (in lsof COMMAND or name), label
 	local port=$1 pattern=$2 label=$3
 	local holder
@@ -40,6 +47,12 @@ check_process() { # pgrep pattern, label
 		FAIL=1
 	fi
 }
+
+# Printed first, because every port and health line below describes whatever
+# was booted from these paths. A worktree override that is stale, or one a
+# previous task left recorded, is otherwise invisible in a green report.
+echo "== Checkouts =="
+fleetcom_print_checkouts
 
 echo "== Midship (fixed ports) =="
 check_port 5173 node   "Vite frontend"

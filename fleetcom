@@ -48,6 +48,7 @@ render_overview() {
 	printf '  %-10s %s\n' stop    "Stop all three stacks and the log view"
 	printf '  %-10s %s\n' restart "Restart all three stacks (stop then start)"
 	printf '  %-10s %s\n' doctor  "Show port + health status"
+	printf '  %-10s %s\n' worktree "Boot a stack from a git worktree instead of its main checkout"
 	printf '  %-10s %s\n' logs    "Stream backend logs and error alerts"
 	printf '  %-10s %s\n' claude  "Full restart, then launch Claude Code beside the logs"
 	printf '  %-10s %s\n' tell    "Send a directive to the supervising Claude pane"
@@ -119,6 +120,20 @@ render_cmd_help() {
 		h "EXAMPLES"
 		printf '    fleetcom doctor\n'
 		;;
+	worktree|worktrees)
+		h "NAME";        printf '    fleetcom worktree - boot a stack from a git worktree\n\n'
+		h "USAGE";       printf '    fleetcom worktree status\n    fleetcom worktree list [repo]\n    fleetcom worktree use <repo> <branch|path>\n    fleetcom worktree reset [repo]\n\n'
+		h "DESCRIPTION"; printf '    Points one repo at a git worktree instead of its main checkout, so a\n    branch can be booted without touching the primary clone. The start\n    scripts need no changes: a linked worktree is an ordinary directory, so\n    all that changes is which path each repo resolves to.\n\n'
+		h "OPTIONS"
+		printf '    status\n        What each repo currently resolves to, and whether an override is set.\n'
+		printf '    list [repo]\n        Every git worktree of each repo; the active one is marked "*".\n'
+		printf '    use <repo> <branch|path>\n        Record an override. A branch is looked up among that repo'"'"'s worktrees;\n        a path is taken directly. Refused if it is not a git checkout.\n'
+		printf '    reset [repo]\n        Drop one override, or every override when no repo is named.\n\n'
+		h "NOTES"
+		printf '    Overrides live in worktrees.conf, separate from local.conf so that an\n    "onboard --reconfigure" cannot discard the worktree you are mid-task on,\n    and so dropping them all is deleting one file. Precedence is environment\n    first, then worktrees.conf, then local.conf, then built-in defaults —\n    so "MIDSHIP_FRONTEND_DIR=... fleetcom start" overrides both files for\n    one run. Restart the affected stack for a change to take effect.\n\n'
+		h "EXAMPLES"
+		printf '    fleetcom worktree status\n    fleetcom worktree list midship-frontend\n    fleetcom worktree use midship-frontend ht-all-fe\n    fleetcom worktree reset midship-frontend\n'
+		;;
 	logs)
 		h "NAME";        printf '    fleetcom logs - stream backend logs and error alerts\n\n'
 		h "USAGE";       printf '    fleetcom logs [--tmux | --windows | --kill]\n\n'
@@ -173,6 +188,7 @@ case "$sub" in
 	stop)                script=fleetcom-stop-all.sh ;;
 	restart)             script=fleetcom-restart-all.sh ;;
 	doctor)              script=fleetcom-doctor.sh ;;
+	worktree|worktrees)  script=fleetcom-worktree.sh ;;
 	logs)                script=fleetcom-logs.sh ;;
 	claude|start-claude) script=fleetcom-start-claude.sh ;;
 	tell)                script=fleetcom-tell.sh ;;
