@@ -67,6 +67,17 @@ fi
 
 # --- Midship (fixed ports; owns 5432/6379/8080/9980/8000/5173) --------------
 if want midship; then
+# Midship's FastAPI process needs real AWS credentials for KMS (Optro OAuth
+# token encryption on every sign-in callback) and S3 blob access, via DI
+# resources in app_container.py that name no profile — see paths.sh's "Midship
+# AWS profile" section for the full story and why this is resolved by AWS
+# account ID rather than a hardcoded profile name. Reported here, once, before
+# either process launch below actually uses it.
+if [ -n "$MIDSHIP_AWS_PROFILE" ]; then
+	say "midship: AWS profile '$MIDSHIP_AWS_PROFILE' resolved for account $MIDSHIP_AWS_ACCOUNT_ID (KMS + Secrets Manager) — exporting to the API and worker processes"
+else
+	say "WARNING: no AWS profile resolved for Midship's account ($MIDSHIP_AWS_ACCOUNT_ID) — KMS calls (e.g. Optro token encryption) will fail with NoCredentialsError unless the ambient/default AWS credentials already resolve to that account. Log into a profile for it (aws sso login --profile <name>) or set MIDSHIP_AWS_PROFILE explicitly, then re-run."
+fi
 if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 	say "midship: docker services"
 	(cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && docker compose up -d)
@@ -96,7 +107,12 @@ if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 			# --timeout-graceful-shutdown: uvicorn --reload hangs forever "waiting for
 			# background tasks" when a file change triggers a reload; cap the wait so
 			# reloads recover instead of wedging the API (port bound, nothing answering)
-			(cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && ENV=local_db nohup poetry run uvicorn midship.app.main:app --reload --timeout-graceful-shutdown 15 > "$LOGS/midship-api.log" 2>&1 &)
+			# AWS_PROFILE goes through `env`'s own argv, not a bare assignment
+			# prefix: bash recognizes `NAME=value` assignment prefixes at parse
+			# time, before expansion, so a `${VAR:+NAME=value}` word here would
+			# not be treated as an assignment — its expansion would become the
+			# command name instead, and the launch would silently fail.
+			(cd "$MIDSHIP_TURBO_BROCCOLI_DIR" && ENV=local_db nohup env ${MIDSHIP_AWS_PROFILE:+AWS_PROFILE="$MIDSHIP_AWS_PROFILE"} poetry run uvicorn midship.app.main:app --reload --timeout-graceful-shutdown 15 > "$LOGS/midship-api.log" 2>&1 &)
 		fi
 	fi
 	# Hatchet workers (document/procedure/screenshot) are separate consumer
@@ -116,7 +132,8 @@ if [ -d "$MIDSHIP_TURBO_BROCCOLI_DIR" ]; then
 		# (e.g. all three fail on a stale Hatchet token). With its own group the
 		# kill 0 stays contained to the workers. fleetcom-stop-all.sh tears them
 		# down (matched by the same 'run-workers?.sh' / worker pattern).
-		( cd "$MIDSHIP_TURBO_BROCCOLI_DIR" || exit 0; set -m; ENV=local_db nohup bash scripts/run-workers.sh > "$LOGS/midship-workers.log" 2>&1 & )
+		# Same AWS_PROFILE-via-`env` reasoning as the API launch above.
+		( cd "$MIDSHIP_TURBO_BROCCOLI_DIR" || exit 0; set -m; ENV=local_db nohup env ${MIDSHIP_AWS_PROFILE:+AWS_PROFILE="$MIDSHIP_AWS_PROFILE"} bash scripts/run-workers.sh > "$LOGS/midship-workers.log" 2>&1 & )
 	fi
 	if up 5173; then say "midship frontend already on 5173"; else
 		if [ ! -d "$MIDSHIP_FRONTEND_DIR/node_modules" ]; then

@@ -13,6 +13,15 @@ set -uo pipefail
 # Standalone: does not source or read FLEETCOM's paths.sh/local.conf, and
 # ignores AB_BACKEND_DIR/MIDSHIP_TURBO_BROCCOLI_DIR even if set in the
 # environment — always assumes the sibling-repo layout under ~/Development.
+#
+# Documented gap: because this script never sources paths.sh, it does not
+# know about MIDSHIP_AWS_PROFILE (paths.sh's account-ID-based AWS profile
+# resolution for Midship's KMS/Secrets Manager calls) and cannot report
+# whether that profile's SSO session is valid. `./fleetcom doctor` covers
+# that check. If this script's "invalid_client"/"invalid_grant" probe below
+# is inconclusive for reasons that smell like credentials rather than OAuth
+# config, run `./fleetcom doctor` too rather than assuming this script would
+# have caught it.
 AB="$HOME/Development/auditboard-backend"
 MID="$HOME/Development/midship-turbo-broccoli"
 # The instance URL the Midship FE produces locally (buildOptroBaseUrl default = caddy https entrypoint).

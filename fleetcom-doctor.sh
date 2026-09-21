@@ -48,6 +48,33 @@ check_process() { # pgrep pattern, label
 	fi
 }
 
+# check_aws_profile: reports which profile paths.sh's fleetcom_resolve_aws_profile
+# picked for Midship's account, and whether it can actually authenticate right
+# now. An unresolved profile is a real FAIL — Midship's KMS calls (Optro token
+# encryption) cannot work at all without one, see paths.sh. An expired SSO
+# session on an otherwise-resolved profile is only a warning, not a FAIL: it is
+# common, self-fixing (aws sso login), and would otherwise red-line this whole
+# report for someone doing AuditBoard- or Cascade-only work who never touches
+# Midship's sign-in flow this run.
+check_aws_profile() { # profile, account id, label
+	local profile=$1 account=$2 label=$3
+	if [ -z "$profile" ]; then
+		printf "%s✗ %-5s %-40s no profile resolved for account %s%s\n" "$RED" "" "$label" "$account" "$NC"
+		FAIL=1
+		return
+	fi
+	if ! command -v aws >/dev/null 2>&1; then
+		printf "%s? %-5s %-40s resolved to %s — aws CLI not on PATH, cannot verify SSO%s\n" "$YELLOW" "" "$label" "$profile" "$NC"
+		return
+	fi
+	if aws sts get-caller-identity --profile "$profile" >/dev/null 2>&1; then
+		printf "%s✓ %-5s %-40s %s (SSO session valid, account %s)%s\n" "$GREEN" "" "$label" "$profile" "$account" "$NC"
+	else
+		printf "%s! %-5s %-40s %s (SSO session expired or invalid)%s\n" "$YELLOW" "" "$label" "$profile" "$NC"
+		printf "%s  ↳ aws sso login --profile %s%s\n" "$YELLOW" "$profile" "$NC"
+	fi
+}
+
 # Printed first, because every port and health line below describes whatever
 # was booted from these paths. A worktree override that is stale, or one a
 # previous task left recorded, is otherwise invisible in a green report.
@@ -64,6 +91,7 @@ check_port 6379 docke  "Redis (docker)"
 check_port 1337 docke  "Hatchet server (docker)"
 check_port 7077 docke  "Hatchet gRPC (docker)"
 check_process "midship.heretic.hatchet.worker" "Hatchet workers (document/procedure/screenshot)"
+check_aws_profile "${MIDSHIP_AWS_PROFILE:-}" "$MIDSHIP_AWS_ACCOUNT_ID" "AWS profile (KMS/Secrets Manager)"
 
 echo "== AuditBoard =="
 check_port 5433  postgres "native Postgres (moved)"

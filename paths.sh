@@ -32,6 +32,14 @@ for _v in $FLEETCOM_REPO_VARS; do
 	eval "_fleetcom_env_$_v=\${$_v:-}"
 done
 
+# MIDSHIP_AWS_PROFILE (see "Midship AWS profile" below) gets the identical
+# save-before/restore-after treatment, just not folded into the loop above:
+# FLEETCOM_REPO_VARS also drives the worktree machinery's positional pairing
+# with FLEETCOM_REPO_NAMES (fleetcom_var_for_repo etc., further down), and
+# this isn't a repo path — folding it in would quietly extend that pairing to
+# a variable it was never meant to describe.
+_fleetcom_env_MIDSHIP_AWS_PROFILE="${MIDSHIP_AWS_PROFILE:-}"
+
 [ -f "$_paths_dir/local.conf" ] && . "$_paths_dir/local.conf"
 
 # Per-machine worktree overrides, written by `fleetcom worktree use` and
@@ -46,7 +54,8 @@ for _v in $FLEETCOM_REPO_VARS; do
 	eval "_fleetcom_saved=\$_fleetcom_env_$_v"
 	[ -n "$_fleetcom_saved" ] && eval "$_v=\$_fleetcom_saved"
 done
-unset _v _fleetcom_saved
+[ -n "$_fleetcom_env_MIDSHIP_AWS_PROFILE" ] && MIDSHIP_AWS_PROFILE="$_fleetcom_env_MIDSHIP_AWS_PROFILE"
+unset _v _fleetcom_saved _fleetcom_env_MIDSHIP_AWS_PROFILE
 
 # Defaults for anything none of the three sources named. MIDSHIP_DIR is honored
 # only as a legacy parent fallback from older local.conf files.
@@ -58,6 +67,115 @@ AB_DEVENV_DIR="${AB_DEVENV_DIR:-$HOME/Development/auditboard-dev-env}"
 MIDSHIP_TURBO_BROCCOLI_DIR="${MIDSHIP_TURBO_BROCCOLI_DIR:-$_midship_parent/midship-turbo-broccoli}"
 MIDSHIP_FRONTEND_DIR="${MIDSHIP_FRONTEND_DIR:-$_midship_parent/midship-frontend}"
 MIDSHIP_ONYX_DIR="${MIDSHIP_ONYX_DIR:-$_midship_parent/midship-onyx}"
+
+# ---- Midship AWS profile (KMS + Secrets Manager) ---------------------------
+#
+# Midship's FastAPI process (midship-turbo-broccoli) needs real AWS credentials
+# for two different things at runtime, via two different code paths:
+# midship/client/secrets.py's AWSSecretsManager hardcodes profile_name="dev"
+# for local envs, but midship/app_container.py's several
+# `Resource(aioboto3.Session, region_name=...)` DI resources — used for KMS
+# generate_data_key (Optro OAuth token encryption, on every "Sign in with
+# Optro" callback) and S3 blob access — name no profile at all and fall back
+# to the ambient/default AWS credential chain. FLEETCOM never exported
+# AWS_PROFILE for the midship launch, so on a machine whose [default] profile
+# carries no credentials (just a region), those KMS calls die with
+# botocore.exceptions.NoCredentialsError — reproduced live as a 500 inside
+# persist_optro_tokens -> credential_encryption.encrypt -> kms.generate_data_key.
+#
+# Hardcoding a profile NAME (as both the app code above and a one-off
+# `AWS_PROFILE=dev` manual workaround do) only works because it happens to
+# match a profile literally named "dev" on this machine. Profile names are
+# per-developer/per-machine — this one also has "midship-dev" and
+# "Midship_SystemAdministrator-637423606355" pointing at the exact same
+# account/role — so FLEETCOM instead resolves by AWS ACCOUNT ID, which is the
+# one identifier that doesn't change between checkouts of ~/.aws/config. It
+# also means an ambient `AWS_PROFILE=Testing` (AuditBoard's own SSO profile,
+# needed for its boot) can no longer silently hand Midship the wrong account
+# by inheritance — the account-ID match structurally cannot select
+# "Testing" (015096527731) or "midship-prod" (654654430428) for this.
+#
+# 637423606355 is Midship's AWS account — the one whose KMS keys and Secrets
+# Manager entries the local FastAPI process needs to reach. It is a fixed
+# property of the Midship account itself, not a per-machine path, so it gets
+# a plain `:-` default rather than local.conf/worktrees.conf treatment — a
+# developer who genuinely needs a different account can still override it via
+# environment, same as any other `${VAR:-default}` line in this file.
+MIDSHIP_AWS_ACCOUNT_ID="${MIDSHIP_AWS_ACCOUNT_ID:-637423606355}"
+
+# fleetcom_resolve_aws_profile ACCOUNT_ID: prints the name of a profile in
+# ~/.aws/config — or $AWS_CONFIG_FILE, the same override point the AWS CLI
+# itself honors — whose `sso_account_id` matches ACCOUNT_ID. Prints nothing
+# and returns 1, with an actionable message on stderr, when none do: a silent
+# empty MIDSHIP_AWS_PROFILE is exactly the failure mode this whole mechanism
+# exists to replace with a named cause.
+#
+# Multiple matches are resolved deterministically rather than by whatever
+# order `~/.aws/config` happens to be in on a given machine: prefer a profile
+# whose sso_role_name contains "Administrator" (case-insensitive), else the
+# first match encountered in file order. In practice, on the machine this was
+# written against, all three profiles matching Midship's account share the
+# exact same role name (Midship_SystemAdministrator) — so the Administrator
+# preference does no work there and file order is what actually picks `dev`.
+# It stays as the primary rule anyway for a config where the matches disagree
+# on role. A developer who wants a specific one of several matches sets
+# MIDSHIP_AWS_PROFILE explicitly (below), which always wins over this.
+fleetcom_resolve_aws_profile() {
+	local want="$1" cfg line cur_name="" cur_account="" cur_role="" first_name="" admin_name=""
+	cfg="${AWS_CONFIG_FILE:-$HOME/.aws/config}"
+	if [ ! -f "$cfg" ]; then
+		printf '[fleetcom] no AWS config at %s — cannot resolve a profile for account %s\n' "$cfg" "$want" >&2
+		return 1
+	fi
+
+	# Deliberately no bash arrays: this file is sourced under callers' `set -u`
+	# (fleetcom-start-all.sh, fleetcom-doctor.sh), and on macOS's stock
+	# /bin/bash (3.2) expanding an empty array under `set -u` is itself an
+	# "unbound variable" error — the zero-matches case this function most
+	# needs to handle cleanly. Plain string variables sidestep that entirely.
+	#
+	# The synthetic trailing "[__end__]" section lets the same "a new section
+	# started, so score the block that just ended" branch below handle the
+	# file's last profile too, instead of duplicating the scoring logic once
+	# more after the loop.
+	while IFS= read -r line || [ -n "$line" ]; do
+		case "$line" in
+			'['*)
+				if [ -n "$cur_name" ] && [ "$cur_account" = "$want" ]; then
+					[ -z "$first_name" ] && first_name="$cur_name"
+					case "$cur_role" in *[Aa]dministrator*) [ -z "$admin_name" ] && admin_name="$cur_name" ;; esac
+				fi
+				case "$line" in
+					'[profile '*) cur_name="${line#\[profile }"; cur_name="${cur_name%%]*}" ;;
+					*)            cur_name="" ;;
+				esac
+				cur_account=""; cur_role=""
+				;;
+			*sso_account_id*=*) cur_account="$(printf '%s\n' "$line" | sed 's/^[^=]*=[[:space:]]*//')" ;;
+			*sso_role_name*=*)  cur_role="$(printf '%s\n' "$line" | sed 's/^[^=]*=[[:space:]]*//')" ;;
+		esac
+	done < <(cat "$cfg"; printf '\n[__end__]\n')
+
+	if [ -z "$first_name" ]; then
+		printf '[fleetcom] no profile in %s has sso_account_id = %s — log into one (aws sso login --profile <name>) or configure one, then set MIDSHIP_AWS_PROFILE to name it explicitly\n' "$cfg" "$want" >&2
+		return 1
+	fi
+	printf '%s\n' "${admin_name:-$first_name}"
+}
+
+# The actual default: auto-resolve unless env, worktrees.conf, or local.conf
+# already set MIDSHIP_AWS_PROFILE (the save/restore dance above, plus
+# local.conf/worktrees.conf being ordinary sourced bash, already gives this
+# variable the same env > worktrees.conf > local.conf precedence every repo
+# path gets — this is just the last link: what fills it in when none of the
+# three named anything). A resolution failure is left as an empty string, not
+# a hard error, so a shell that sources paths.sh for unrelated reasons (e.g.
+# `fleetcom doctor` when only working on AuditBoard) doesn't die over it —
+# callers that actually need it (fleetcom-start-all.sh) check for empty and
+# say so themselves.
+if [ -z "${MIDSHIP_AWS_PROFILE:-}" ]; then
+	MIDSHIP_AWS_PROFILE="$(fleetcom_resolve_aws_profile "$MIDSHIP_AWS_ACCOUNT_ID" 2>/dev/null)" || MIDSHIP_AWS_PROFILE=""
+fi
 
 # machine-learning is cloned by start-background inside the dev-env checkout
 ML_DIR="$AB_DEVENV_DIR/machine-learning"
