@@ -195,6 +195,20 @@ rm -f "$SB_LOG"
 (cd "$DEVENV" && direnv exec . docker compose "${UP_FILES[@]}" up -d "${UP_SERVICES[@]}") \
 	|| say "WARNING: conductor/extract startup failed (see above) — continuing with the rest of the boot"
 
+# launchdevly (AB's local feature-flag proxy) is one of the ~20 services in the
+# batched "abc run start-background" call above, which is a single atomic
+# `docker compose up -d` — a broken sibling image (oso-facts-transformer,
+# missing build context) aborts that whole batch with exit 1 and takes
+# launchdevly down with it even though launchdevly itself built and runs fine.
+# Worse, fleetcom-stop-all.sh's stop step tears down the same compose project,
+# so every restart re-breaks it even after someone manually recovered it — the
+# broken sibling is still in the next batch. So recover it with its own
+# targeted `up -d`, unconditionally, regardless of whether the batch above
+# exited 0 or not; a no-op when it's already up.
+say "AB launchdevly (flag proxy): targeted recovery in case a sibling image broke the batched start"
+(cd "$DEVENV" && direnv exec . docker compose -f docker-compose-supplement-dev.yml up -d launchdevly) \
+	|| say "WARNING: launchdevly recovery failed — check 'docker logs auditboard-dev-env-launchdevly-1'"
+
 # machine-learning's docker-compose.override.yml carries a FLEETCOM-only port
 # remap (host 8004 -> container 8000) so ML doesn't collide with Midship's
 # FastAPI on 8000. That override is git-TRACKED in the shared repo and the remap
