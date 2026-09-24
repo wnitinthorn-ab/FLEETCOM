@@ -88,6 +88,74 @@ container. `LOCAL_DB_NAME` is already read by the app
   branch, so a branch's migrations never touch another instance.
 - Refreshing the golden database is a separate, explicit verb.
 
+**Seeded, identical starting state in every instance.** Every instance must
+start with instance 0's users, workspaces, Optro workspace binding, OAuth and
+JIT-provisioned users, and Forge data. Signing in then works the same way in
+every worktree, and none of the setup steps an empty database needs are
+repeated. The failure an empty database causes (unmigrated main schema, then
+an unmigrated `forge` schema, then Optro sign-in failing because the workspace
+and just-in-time provisioning weren't set up) is exactly why instance 0 uses
+one shared database.
+
+- **Source of the golden database:**
+  - Default: a snapshot of instance 0's live database. It carries your
+    current seeded, logged-in state.
+  - Alternative, for a clean baseline: the repo's seed dump
+    (`/Users/wnitinthorn/Development/midship-turbo-broccoli/db/dev_dump_*.sql`,
+    the one `fleetcom-onboard.sh` loads through `scripts/load_db_dump.py`),
+    plus the same fix-ups onboarding applies afterwards.
+  - Chosen with `golden-refresh --from instance0|dump`.
+- **Both schemas are copied.** `public` and `forge` (with both
+  `alembic_version` tables) live in the same database, so one `TEMPLATE`
+  clone carries both.
+- **User IDs are identical in every clone.** Anything keyed by user or
+  workspace ID behaves the same in every instance: LaunchDarkly targeting,
+  Optro bindings, access tokens signed with the shared secret from `.env`.
+- **Keeping instances current:**
+  - `./fleetcom instance reseed <id>` drops the instance's database,
+    re-clones it from the golden database and re-runs the branch's
+    migrations. The slot, hostname and Hatchet server are kept.
+  - `doctor --instance <id>` warns when the golden database is behind instance
+    0's `alembic_version` or older than 7 days. Refreshing is never automatic,
+    so an instance's data is never replaced without asking.
+- **Files in S3 stay shared.** Cloned rows point at the same objects in the
+  real, shared S3 buckets, so file contents appear in every instance. Deleting
+  a file in one instance deletes the object that the other instances' rows
+  still reference. Treat deletions as shared.
+
+**LaunchDarkly, AWS and other local configuration: the same everywhere.**
+Every instance's API and worker launches get the same variables instance 0 gets:
+- `LAUNCHDARKLY_LOCAL_ONLINE` (default `true`, or
+  `MIDSHIP_LAUNCHDARKLY_LOCAL_ONLINE`);
+- `AWS_PROFILE` from `MIDSHIP_AWS_PROFILE`, for KMS, Secrets Manager and the
+  LaunchDarkly key;
+- `ENV=local_db`.
+
+The injection moves into one function in `fleetcom-paths.sh`, used by every
+launch, so an instance can't drift from instance 0.
+
+`.env` / `.env.local`, which hold the Optro client id, the `private_key_jwt`
+private key and the signing secrets, stay symlinked from the main checkout,
+as `/Users/wnitinthorn/Development/FLEETCOM/fleetcom-worktree.sh` and
+[midship-frontend#504](https://github.com/soxhub/midship-frontend/pull/504)
+already do. A rotated credential is therefore updated once. Only the
+per-instance values from `instances/<id>.conf` and `ports.env` override them:
+ports, `LOCAL_DB_NAME`, `REDIS_PORT`, `HATCHET_*` and URLs.
+
+**Local state survives restarts.**
+- An instance's slot number, and so its ports and `s<n>.localhost` hostname,
+  never changes once assigned. The browser keeps the instance's
+  `access_token`/`workspace_id` in localStorage and its cookies, so sign-in
+  survives `stop`/`start` and reboots.
+- A new instance still needs one sign-in, because browsers keep storage per
+  origin. The sign-in is immediate because the user and workspace already
+  exist in the cloned database.
+- `down` and `stop` never remove volumes, the database, the Hatchet profile or
+  the conf file. Only `destroy` and `reseed` touch data, and both ask for
+  confirmation.
+- Redis contents and Hatchet run history are not copied into new instances.
+  They start empty, like after a Redis restart today.
+
 **Redis: one container per instance, not a DB index.** Midship's broadcast
 client uses Redis pub/sub (`app_container.py:245,321`), and pub/sub channels
 are shared across all DB indexes. Only a separate server isolates them. That
@@ -302,7 +370,13 @@ don't use FLEETCOM get the same isolation; FLEETCOM calls the same script.
 - `down`: stop the compose project and Hatchet server; keep the data.
 - `destroy`: also drop `midship_s<n>`, remove the Hatchet project and volumes
   and the profile, and free the slot.
-- `golden-refresh`: `pg_dump` instance 0's database into `midship_golden`.
+- `golden-refresh [--from instance0|dump]`:
+  - `instance0` (the default) pipes a `pg_dump` of instance 0's live database
+    into a freshly recreated `midship_golden`.
+  - `dump` loads the newest `db/dev_dump_*.sql` through
+    `scripts/load_db_dump.py`, then applies onboarding's post-seed fix-ups.
+- `reseed <id>`: drop the instance's database, re-clone it from
+  `midship_golden`, and migrate. Keeps the slot, Hatchet server and conf file.
 - Compatibility:
   - The script is new and runs only when invoked.
   - It never touches instance 0's database, compose project or `local` Hatchet
@@ -334,7 +408,14 @@ don't use FLEETCOM get the same isolation; FLEETCOM calls the same script.
   - New: `./fleetcom instance create <id> [--frontend <worktree>] [--backend <worktree>] [--wopi]`
     allocates a slot, writes the conf file, calls item 4's `up`, and registers
     the OAuth redirect URI (item 6).
-  - New: `./fleetcom instance list | destroy <id> | golden-refresh`.
+  - New: `./fleetcom instance list | destroy <id> | reseed <id> | golden-refresh [--from instance0|dump]`.
+    `destroy` and `reseed` ask for confirmation.
+  - `instance create` runs `golden-refresh` automatically the first time, when
+    `midship_golden` doesn't exist yet.
+- **Shared launch environment:** one function in `fleetcom-paths.sh` builds the
+  environment for API and worker launches (`ENV=local_db`, `AWS_PROFILE`,
+  `LAUNCHDARKLY_LOCAL_ONLINE`) for every instance, instance 0 included. It
+  replaces the per-launch copies in `fleetcom-start-all.sh`.
   - `--instance` with `auditboard` or `cascade` is refused under Plan B,
     naming the shared instance.
 - **Doctor:** reports the instance's ports, Hatchet server, database existence,
@@ -389,6 +470,17 @@ containers. The host has 128 GB, so raising the VM limit is cheap if needed.
 7. A Midship → Optro → Cascade hybrid run completes from s1 and from s2.
 8. `./fleetcom instance destroy s1` frees the slot, database, containers and profile;
    s2 is untouched.
+9. Seeded state:
+   - Signing in to s1 and s2 with instance 0's user lands in the same
+     workspaces, with the same Optro binding.
+   - No onboarding, migration or just-in-time setup step is needed beyond the
+     one sign-in per new hostname.
+10. The same LaunchDarkly flag evaluates the same way in instance 0, s1 and s2.
+    Check a flag targeted at that user or workspace.
+11. `./fleetcom --instance s1 stop`, then `start`: the browser on
+    `s1.localhost` is still signed in, and s1's data is intact.
+12. `./fleetcom instance reseed s2` brings s2 back to the golden state; s1 and
+    instance 0 are unchanged.
 
 ---
 
@@ -477,7 +569,7 @@ ports and about 4.6 GB, which is why it is not proposed.
 
 ### Acceptance test (Plan A)
 
-Plan B's steps 1-8, plus:
+Plan B's steps 1-12, plus:
 - Each instance's Optro sign-in lands in its own AuditBoard.
 - A hybrid run on s1 creates a workbook only in s1's Cascade.
 - Resetting s1's AuditBoard database leaves s2 and instance 0 untouched.
