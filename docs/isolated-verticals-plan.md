@@ -7,15 +7,10 @@ Forge, Hatchet workers, Hatchet server, database, Redis), each wired through
 Optro/AuditBoard and Cascade, so that restarting, migrating or breaking one
 never affects another.
 
-Two plans:
-
-- **Plan B: Midship only.** Changes land in midship-frontend,
-  midship-turbo-broccoli and FLEETCOM, plus local gitignored override files.
-  AuditBoard/Optro and Cascade stay one shared instance. This is the plan that
-  can be executed today.
-- **Plan A: full vertical.** Plan B plus changes in auditboard-backend,
-  auditboard-dev-env and cascade, so each instance also gets its own
-  AuditBoard and Cascade. It needs agreement from the teams owning those repos.
+Scope: Midship only. Changes land in midship-frontend,
+midship-turbo-broccoli and FLEETCOM, plus local gitignored override files.
+AuditBoard/Optro and Cascade stay one shared instance. This is the plan that
+can be executed today.
 
 Container runtime: none of this depends on Docker vs Podman. On macOS both run a
 Linux VM that publishes ports to host `localhost`. The blockers are processes
@@ -30,22 +25,20 @@ Look up current state with `gh pr view <n> --repo soxhub/<repo>`.
 
 | Repo / item | What it does | Relevance |
 |---|---|---|
-| midship-frontend #497 | Each worktree gets a slot in `~/.config/midship-dev/slots.json`. Ports shift by 5 × slot (FE 5173, API 8000, Forge FE 3434, Forge BE 8003). `.claude/scripts/setup_worktree.py:36`, `transform()` at `:307-323` | Base port allocator for both plans |
+| midship-frontend #497 | Each worktree gets a slot in `~/.config/midship-dev/slots.json`. Ports shift by 5 × slot (FE 5173, API 8000, Forge FE 3434, Forge BE 8003). `.claude/scripts/setup_worktree.py:36`, `transform()` at `:307-323` | Base port allocator |
 | midship-frontend #504 | Pairs a frontend worktree with a same-branch midship-turbo-broccoli worktree, symlinks `.env*`, installs dependencies | Reused as is |
 | midship-frontend #506, #507, #511 | Settings symlink; dev servers outlive the Claude session; dev servers stop with their stack via per-stack pgid files (`dev-server.sh:58-98`); a preview never kills another process to take its port | The pgid mechanism is the model for FLEETCOM's process handling |
 | midship-frontend #606 (open) | Honors a typed `http://` for a localhost Optro URL | Needed for local Optro sign-in (see Risks) |
 | midship-turbo-broccoli #1458 | `DB_NAME` configurable (RDS code path) | Local path already has `LOCAL_DB_NAME` |
 | midship-turbo-broccoli #1436 | Hatchet dev file watcher ignores Claude Code worktrees | Reused |
-| auditboard-frontend #34273, #35597 | Vite and caddy pick free ports per worktree; `PORT_API_V1`/`PORT_API_V2` honored | Plan A: the AuditBoard frontend side is already done |
-| ab-cli #191, #194 (open), DEVTOOLS-915 | `abc env` / `abc worktree`. DEVTOOLS-915 deliberately **dropped** per-worktree port/DB offsets in favour of a future "role-aware" model | Plan A works against this stated direction; talk to the DX team first |
-| FLEETCOM uncommitted work in the main checkout | Hardens the single shared Midship stack: pins `-p midship-turbo-broccoli`, runs migrations on boot, adds Cascade→MinIO forwarders, orders the Hatchet stop | Touches the same files as Plan B's FLEETCOM work. Commit or merge it first |
+| FLEETCOM uncommitted work in the main checkout | Hardens the single shared Midship stack: pins `-p midship-turbo-broccoli`, runs migrations on boot, adds Cascade→MinIO forwarders, orders the Hatchet stop | Touches the same files as this plan's FLEETCOM work. Commit or merge it first |
 
 No PR in any repo isolates the Midship database, Redis or Hatchet per stack.
 PR #497 documents sharing them as deliberate for now.
 
 ---
 
-## Design decisions (both plans)
+## Design decisions
 
 **Instance 0 stays exactly as today.** It keeps the compose project
 `midship-turbo-broccoli`, database `postgres`, ports 5173/8000, and the shared
@@ -61,7 +54,6 @@ truth, and FLEETCOM reads it rather than keeping a second registry. Instance n =
 | Midship Redis (container) | 6379+100n | 6479 |
 | Hatchet server (container) | dashboard 1337+100n, gRPC 7077+100n | 1437, 7177 |
 | WOPI / Onyx (optional, off by default) | 8080+100n, 9980+100n | 8180, 10080 |
-| Plan A only: AuditBoard, Cascade | base+100n per port | 9101…, 8110… |
 
 Slot 2 puts the API on 8010 and Forge BE on 8013, but 8010/8011 belong to
 Cascade. Today the allocator only skips ports that are *currently* busy, so
@@ -190,7 +182,7 @@ today's pattern, limited to instance 0's checkout (compatibility rule 6).
 
 ---
 
-## Backwards compatibility (applies to every work item in both plans)
+## Backwards compatibility (applies to every work item)
 
 The requirement: someone who never creates an instance, never edits a config
 file, and never re-runs onboarding sees exactly today's behaviour. This includes
@@ -256,7 +248,7 @@ anyone pulling only some of these PRs, or running an old branch in a worktree.
    - `--instance` is a new, optional flag.
    - `MIDSHIP_FRONTEND_DIR`-style environment overrides keep their precedence.
 
-**Regression test, run on every Plan B/Plan A PR before merge**
+**Regression test, run on every PR before merge**
 
 1. Starting point: today's `local.conf` and `worktrees.conf`, no `instances/`
    directory, and no new environment variables set.
@@ -278,7 +270,7 @@ anyone pulling only some of these PRs, or running an old branch in a worktree.
 
 ---
 
-## Plan B: Midship only
+## Midship only
 
 ### What is isolated and what is shared
 
@@ -295,7 +287,7 @@ anyone pulling only some of these PRs, or running an old branch in a worktree.
 | Cascade | | ✅ one instance |
 | LaunchDarkly, AWS (KMS, Secrets Manager, S3) | | ✅ real, shared |
 
-What "full vertical" means under Plan B: each Midship instance runs the complete
+What "full vertical" means here: each Midship instance runs the complete
 Midship → Optro → Cascade flow against the one shared AuditBoard and Cascade.
 Midship state is isolated. Optro users, workspaces and Cascade workbooks are
 shared. Since every instance talks to the same AuditBoard, the Optro base URL
@@ -314,8 +306,8 @@ item 5 rewrites the same lines.
   `midship/app/api/files/router.py:49,108`.
 - Optional, same PR: a `DB_PORT` setting. `DB_HOST=127.0.0.1:5432` already
   works, since the URL is built as `...@{host}/{db}`
-  (`packages/midship_core/midship_core/db/session.py:52`). Plan B doesn't need
-  it because the Postgres server is shared.
+  (`packages/midship_core/midship_core/db/session.py:52`). Not needed here
+  because the Postgres server is shared.
 - Compatibility:
   - With `REDIS_PORT` unset, every connection is byte-for-byte today's.
   - A `DB_PORT` setting, if added, must not break an existing
@@ -416,7 +408,7 @@ don't use FLEETCOM get the same isolation; FLEETCOM calls the same script.
   environment for API and worker launches (`ENV=local_db`, `AWS_PROFILE`,
   `LAUNCHDARKLY_LOCAL_ONLINE`) for every instance, instance 0 included. It
   replaces the per-launch copies in `fleetcom-start-all.sh`.
-  - `--instance` with `auditboard` or `cascade` is refused under Plan B,
+  - `--instance` with `auditboard` or `cascade` is refused,
     naming the shared instance.
 - **Doctor:** reports the instance's ports, Hatchet server, database existence,
   and migration state, reusing `check_midship_db_ready`.
@@ -447,7 +439,7 @@ don't use FLEETCOM get the same isolation; FLEETCOM calls the same script.
   - Appending is idempotent.
   - `instance destroy` removes only its own URI.
 
-### Cost per extra instance (Plan B)
+### Cost per extra instance
 
 Not measured, so it has to be checked on the first instance: one Redis container
 (tens of MB), one Hatchet server (a Postgres plus hatchet-lite container),
@@ -455,7 +447,7 @@ uvicorn with reload, six Hatchet worker processes, and two Vite dev servers.
 Expect roughly 2-3 GB. The Docker VM is allocated about 25 GB and runs 36
 containers. The host has 128 GB, so raising the VM limit is cheap if needed.
 
-### Acceptance test (Plan B)
+### Acceptance test
 
 1. `./fleetcom instance create s1 --frontend <worktree-A>` and `s2 --frontend
    <worktree-B>` on different branches, with instance 0 running.
@@ -481,100 +473,6 @@ containers. The host has 128 GB, so raising the VM limit is cheap if needed.
     `s1.localhost` is still signed in, and s1's data is intact.
 12. `./fleetcom instance reseed s2` brings s2 back to the golden state; s1 and
     instance 0 are unchanged.
-
----
-
-## Plan A: full vertical (adds AuditBoard and Cascade per instance)
-
-Everything in Plan B, plus the items below. Each item is in a repo owned by
-another team. DEVTOOLS-915 records the DX team's decision against per-worktree
-port/database offsets in `abc`, so agree the approach with them before opening PRs.
-
-### What changes from Plan B
-
-| Component | Plan A |
-|---|---|
-| AuditBoard v1/v2/auth, login and client Vite, caddy | Per instance, ports base+100n |
-| AuditBoard database | `demo_data_s<n>` on the shared host Postgres (5433), from `TEMPLATE` |
-| AuditBoard Redis | Shared host Redis 6382, DB index `/n` (check that AuditBoard doesn't depend on pub/sub across instances) |
-| Permissions service (9008/9009) | Decision needed: `PERMISSIONS_DATABASE_URL` is hardcoded to `demo_data` (`auditboard-dev-env/.envrc:231`) |
-| Cascade web, ws, c3, its database and volumes | Per instance, own compose project |
-| launchdevly, conductor, extract, ML, MinIO, Kafka, mailcatcher | Shared |
-| Midship cloned database | Must rebind the workspace's Optro base URL to its own AuditBoard (`bind_workspace_optro_base_url`, `optro_oauth_router.py:419`) |
-
-### Work items
-
-Compatibility for every Plan A item follows the same rules:
-- New environment mappings default to today's ports and database names.
-- `abc` and `start-all` users with no overlay see no change.
-- The DX team's `abc env` work (ab-cli #191) must not be broken by it.
-
-**A1. auditboard-backend: port settings from environment variables.**
-- v1 reads `hapi.port` (`config/default.mjs:13`), auth reads `config/default.mjs:17`,
-  and v2 reads `common/routing-layer/config/default.json:4`. None has an
-  environment mapping.
-- Try `NODE_CONFIG='{"hapi":{"port":N}}'` first, since it may need no code.
-  v2 has its own config directory, so check that `NODE_CONFIG` reaches it.
-- Otherwise add mappings in both `custom-environment-variables.mjs` files. Small PR.
-
-**A2. auditboard-dev-env: per-instance environment overlay.**
-- The overlay sets `DATABASE_URL` (`demo_data_s<n>`), `REDIS_URL` /
-  `DOCKER_REDIS_URL` (DB index), `BASE_URL`, `PORT_API_V1`/`V2`,
-  `PORT_login`, `PORT_soxhub-client`, `MIDSHIP_OAUTH_*`, `CASCADE_API_URL` and
-  `CASCADE_APP_URL`.
-- `.envrc:2-5` re-sets `SOXHUB_*_DIR` whenever it loads. `bin/reset-db:29` honours
-  an exported `SOXHUB_API_DIR` only when the dev-env `.envrc` isn't reloaded
-  after it, so the overlay must load last.
-- This could be a FLEETCOM-owned overlay with no dev-env PR, but it depends on
-  A1 for the backend ports.
-
-**A3. Permissions service.** Either share one permissions database, so all
-instances see instance 0's permissions (simplest, and likely acceptable since
-demo data is identical), or run a permissions container per instance. Decide
-after checking what the service reads per request.
-
-**A4. cascade: configurable frontend ports.** `client/src/js/core/host.ts:1-3`
-hardcodes `localhost:8088`, 8010 and 8011, so a second Cascade frontend can't
-reach its own API. Small PR: build-time environment values with those
-defaults. With nothing set, the built bundle must be identical in behaviour,
-and the non-localhost (deployed) branch of `host.ts` must be untouched.
-
-**A5. Cascade per instance (FLEETCOM, no Cascade PR).**
-- A per-instance copy of `cascade-compose.override.yml` with `-p cascade-s<n>`
-  and shifted ports (8010, 8011, 33060, 63790, 6010/6011, 8088, debugpy
-  15678-82).
-- Volumes are namespaced by project, so a new instance starts **empty**, the
-  same trap as Midship. Seed from a dump, like the Midship golden database.
-- `AB_DOMAINS` is comma-separated (`cascade/server/cascade/settings/default.py:341`)
-  but `AB_LOGIN_URL` (`:342`) is a single URL, so each Cascade instance points
-  at its own AuditBoard.
-- The fixed `cascade_web` name used by `fleetcom-start-all.sh:366` becomes a
-  compose-service lookup.
-
-**A6. Midship rebind.** After cloning, `instance create` rebinds the workspace's
-Optro base URL to the instance's own AuditBoard. The OAuth client (config client
-per AuditBoard instance, set by environment, no SQL) carries that instance's
-redirect URI.
-
-### Cost per extra instance (Plan A)
-
-About 3-5 GB on top of Plan B's cost, based on current measurements:
-- AuditBoard v1 node is about 460 MB.
-- The Cascade set is about 4 GB across 10 containers today, part of which
-  (MinIO, shared services) is not duplicated.
-- Boots add 1-4 minutes per AuditBoard.
-
-Duplicating the whole dev-env per instance instead would repeat about 20 fixed
-ports and about 4.6 GB, which is why it is not proposed.
-
-### Acceptance test (Plan A)
-
-Plan B's steps 1-12, plus:
-- Each instance's Optro sign-in lands in its own AuditBoard.
-- A hybrid run on s1 creates a workbook only in s1's Cascade.
-- Resetting s1's AuditBoard database leaves s2 and instance 0 untouched.
-
----
 
 ## Risks and things to verify first
 
@@ -602,5 +500,4 @@ Plan B's steps 1-12, plus:
 ## Suggested order
 
 0 → 1 → 2 (both midship-turbo-broccoli, independent, can be one PR) → 3 → 4 → 5
-→ 6 → acceptance test. Plan A items start only after Plan B passes and the
-DX team agrees; A1 and A4 are independent small PRs and can go first.
+→ 6 → acceptance test.
