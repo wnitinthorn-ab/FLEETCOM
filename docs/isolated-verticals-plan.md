@@ -67,7 +67,10 @@ Slot 2 puts the API on 8010 and Forge BE on 8013, but 8010/8011 belong to
 Cascade. Today the allocator only skips ports that are *currently* busy, so
 slot 2 is taken whenever Cascade happens to be down. Fix: a reserved-port list
 in `setup_worktree.py` covering every fixed fleet port (8010, 8011, 8004, 8080,
-8088, 9000-9006, 9980, 1337, 7077, 5432, 5433, 6379, 6382).
+8088, 9000-9006, 9980, 1337, 7077, 5432, 5433, 6379, 6382). The list applies
+only to **new** allocations. A worktree already registered on slot 2 keeps it,
+and setup prints a warning suggesting it be re-slotted, so nobody's ports
+change underneath them.
 
 **Database: one Postgres server, one database per instance.** No new Postgres
 container. `LOCAL_DB_NAME` is already read by the app
@@ -114,7 +117,96 @@ frontend is launched in its own process group, and the group id goes to
 binary, so launch through the same mechanism `dev-server.sh` uses (or a
 `python3 -c 'import os; os.setpgrp(); os.execvp(...)'` wrapper). Instance 0
 moves to the same mechanism, which also fixes today's `pkill` patterns killing
-PR #497 worktree stacks.
+PR #497 worktree stacks. When a pgid file is missing, stop falls back to
+today's pattern, limited to instance 0's checkout (compatibility rule 6).
+
+---
+
+## Backwards compatibility (applies to every work item in both plans)
+
+The requirement: someone who never creates an instance, never edits a config
+file, and never re-runs onboarding sees exactly today's behaviour. This includes
+anyone pulling only some of these PRs, or running an old branch in a worktree.
+
+**Rules**
+
+1. **Every new setting defaults to today's value.**
+   - `REDIS_PORT` defaults to 6379.
+   - Compose ports are `${VAR:-<today's port>}`.
+   - `LOCAL_DB_NAME` still defaults to `postgres`.
+   - Hatchet still uses the `local` profile.
+   - Hostnames stay `localhost`.
+   - AuditBoard and Cascade ports keep their current defaults.
+
+   An unset variable must never be an error.
+2. **Isolation is opt-in, never inferred.**
+   - Nothing becomes isolated because a file is present or absent, or a port
+     happens to be free.
+   - Only an explicit `--instance <id>` / `instance create`, or
+     midship-frontend's `--isolated` flag, turns it on.
+   - PR #497 worktree stacks keep sharing the database, Redis and Hatchet
+     unless `--isolated` is passed.
+3. **Instance 0 keeps every name and path.** The following don't change when
+   `FLEETCOM_INSTANCE` is unset:
+   - ports;
+   - compose project `midship-turbo-broccoli` and container names;
+   - database `postgres`;
+   - log files in `logs/` (not `logs/0/`);
+   - tmux sessions `fleetcom-logs` / `fleetcom-ab-api`;
+   - `logs/tmux-panes.md`;
+   - `worktrees.conf` and `local.conf` handling;
+   - `./fleetcom doctor` output.
+
+   Scripts and people that grep these keep working.
+4. **Files are only added to.**
+   - `ports.env` and `launch.json` gain keys; existing keys keep their meaning
+     and values.
+   - `slots.json` entries are never renumbered.
+   - OAuth redirect URIs are appended, never replaced.
+   - No existing file changes format.
+5. **No new required setup step.**
+   - `onboard` doesn't gain a mandatory step.
+   - `midship_golden`, per-instance Hatchet profiles and conf files are created
+     lazily by `instance create`.
+   - `update` and `doctor` never require them.
+6. **Stopping still works on processes started by the old scripts.**
+   - A process with no pgid file (launched before the upgrade, or by hand)
+     is stopped the way it is today.
+   - The old `pkill -f` patterns remain the fallback for instance 0 only.
+   - The fallback is limited to processes whose working directory is instance
+     0's checkout, so it can't hit an instance's processes.
+7. **Mixed versions fail loudly, never silently share.**
+   - `instance create` checks that the checked-out midship-turbo-broccoli branch
+     supports `REDIS_PORT`. The check is a grep for the setting in
+     `midship/config.py`.
+   - It also checks that the midship-frontend branch supports `--isolated`.
+   - If either check fails, it refuses and names the missing change, rather
+     than starting an instance that quietly uses instance 0's Redis or Hatchet.
+   - Instance 0 never runs these checks. An old branch runs exactly as today.
+8. **No renamed or removed verbs, flags or environment variables.**
+   - Existing `./fleetcom` verbs keep their arguments and output.
+   - `--instance` is a new, optional flag.
+   - `MIDSHIP_FRONTEND_DIR`-style environment overrides keep their precedence.
+
+**Regression test, run on every Plan B/Plan A PR before merge**
+
+1. Starting point: today's `local.conf` and `worktrees.conf`, no `instances/`
+   directory, and no new environment variables set.
+2. Run `./fleetcom start`, then `doctor`, then `restart midship`, then `stop`.
+3. Compare against a run on `main`. All of these must be identical:
+   - the listening ports (`lsof -iTCP -sTCP:LISTEN`);
+   - `docker ps --format '{{.Names}}'`;
+   - the set of log file paths;
+   - tmux session names;
+   - `doctor` output, apart from timestamps.
+4. The same check with a PR #497 worktree stack running beside instance 0,
+   without `--isolated`: it still shares the database, and a FLEETCOM restart no
+   longer kills it (the one intended change).
+5. Leave an old midship-turbo-broccoli branch without `REDIS_PORT` checked out:
+   - instance 0 boots and works;
+   - `instance create` refuses and names the missing change.
+6. Start the stack with the *old* FLEETCOM, upgrade FLEETCOM, then run
+   `./fleetcom stop`: every old process and container stops.
 
 ---
 
@@ -156,6 +248,12 @@ item 5 rewrites the same lines.
   works, since the URL is built as `...@{host}/{db}`
   (`packages/midship_core/midship_core/db/session.py:52`). Plan B doesn't need
   it because the Postgres server is shared.
+- Compatibility:
+  - With `REDIS_PORT` unset, every connection is byte-for-byte today's.
+  - A `DB_PORT` setting, if added, must not break an existing
+    `DB_HOST=host:port`. When both are set, `DB_HOST`'s port wins, with a
+    warning.
+  - Staging and production don't set it, so their behaviour is unchanged.
 
 **2. midship-turbo-broccoli: parameterize the compose file.** Small PR.
 - Host ports from variables with today's defaults: `${MIDSHIP_PG_PORT:-5432}`,
@@ -167,6 +265,13 @@ item 5 rewrites the same lines.
 - The project-name pin stays in the gitignored override, owned by FLEETCOM.
   Instances ≥ 1 pass `-p midship-s<n>` and run only `redis` (plus `wopi`/`onyx`
   when asked). Postgres stays in instance 0's project.
+- Compatibility:
+  - A plain `docker compose up`, with no variables set and no override, must
+    publish the same ports and create the same volume names as today.
+  - `load_db_dump.py` falls back to today's container name when
+    `COMPOSE_PROJECT_NAME` is unset.
+  - The volume `midship-turbo-broccoli_midship-pgdata` is never renamed, so
+    existing data stays attached.
 
 **3. midship-frontend: full per-instance environment.** Medium PR in
 `.claude/scripts/setup_worktree.py`.
@@ -179,6 +284,13 @@ item 5 rewrites the same lines.
 - `launch.json`'s `hatchet-worker` entry uses `--profile s<n>`, not `local`.
 - An `--isolated` flag. Without it the stack behaves exactly like PR #497
   (shared database, Redis and Hatchet), so nobody's current workflow changes.
+- Compatibility:
+  - Without `--isolated`, the new keys either aren't written or are written
+    with today's values, and `launch.json` is unchanged.
+  - The main checkout's no-op path (slot 0) stays a no-op.
+  - Existing `slots.json` entries keep their slot numbers. The registry format
+    only gains optional fields, which older script versions ignore.
+  - `test-setup-worktree.sh` gains cases asserting all of this.
 
 **4. midship-frontend: instance data bootstrap.** Medium PR, a new script next
 to `setup-worktree.sh`. Keeping it in this repo means Midship developers who
@@ -191,6 +303,11 @@ don't use FLEETCOM get the same isolation; FLEETCOM calls the same script.
 - `destroy`: also drop `midship_s<n>`, remove the Hatchet project and volumes
   and the profile, and free the slot.
 - `golden-refresh`: `pg_dump` instance 0's database into `midship_golden`.
+- Compatibility:
+  - The script is new and runs only when invoked.
+  - It never touches instance 0's database, compose project or `local` Hatchet
+    profile.
+  - `destroy` refuses instance 0.
 
 **5. FLEETCOM: instance support.** Largest item, 2-3 PRs.
 - **`fleetcom-paths.sh`:** a `FLEETCOM_INSTANCE` variable (empty means
@@ -222,6 +339,13 @@ don't use FLEETCOM get the same isolation; FLEETCOM calls the same script.
     naming the shared instance.
 - **Doctor:** reports the instance's ports, Hatchet server, database existence,
   and migration state, reusing `check_midship_db_ready`.
+- Compatibility:
+  - With `FLEETCOM_INSTANCE` unset, every derived variable equals today's
+    literal. The PRs replace literals with variables whose defaults are those
+    literals.
+  - The regression test (above) proves it.
+  - `doctor` without `--instance` prints the same report. It gets at most one
+    extra line listing other running instances, and only when some exist.
 
 **6. Optro sign-in per instance (AuditBoard data only, no AuditBoard code).**
 - AuditBoard redirect URIs match exactly on scheme, host and port. Each instance's callback
@@ -237,6 +361,10 @@ don't use FLEETCOM get the same isolation; FLEETCOM calls the same script.
   registration step. `instance create` appends the URI and
   re-applies it after a reseed, the same way FLEETCOM already re-applies
   the ML port override.
+- Compatibility:
+  - The existing `localhost:5173` redirect URI is never removed or edited.
+  - Appending is idempotent.
+  - `instance destroy` removes only its own URI.
 
 ### Cost per extra instance (Plan B)
 
@@ -284,6 +412,11 @@ port/database offsets in `abc`, so agree the approach with them before opening P
 
 ### Work items
 
+Compatibility for every Plan A item follows the same rules:
+- New environment mappings default to today's ports and database names.
+- `abc` and `start-all` users with no overlay see no change.
+- The DX team's `abc env` work (ab-cli #191) must not be broken by it.
+
 **A1. auditboard-backend: port settings from environment variables.**
 - v1 reads `hapi.port` (`config/default.mjs:13`), auth reads `config/default.mjs:17`,
   and v2 reads `common/routing-layer/config/default.json:4`. None has an
@@ -311,7 +444,8 @@ after checking what the service reads per request.
 **A4. cascade: configurable frontend ports.** `client/src/js/core/host.ts:1-3`
 hardcodes `localhost:8088`, 8010 and 8011, so a second Cascade frontend can't
 reach its own API. Small PR: build-time environment values with those
-defaults.
+defaults. With nothing set, the built bundle must be identical in behaviour,
+and the non-localhost (deployed) branch of `host.ts` must be untouched.
 
 **A5. Cascade per instance (FLEETCOM, no Cascade PR).**
 - A per-instance copy of `cascade-compose.override.yml` with `-p cascade-s<n>`
